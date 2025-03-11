@@ -30,7 +30,7 @@ def parse_args():
     # parser.add_argument('--data_name', type=str, default='JNU', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
     # parser.add_argument('--data_dir', type=str, default=r'/home/t/projects/UDTL_master/data/JNU', help='the directory of the data')
-    parser.add_argument('--transfer_task', type=list, default=[[0],[1], [2], [3]], help='transfer learning tasks')
+    parser.add_argument('--transfer_task', type=list, default=[[0], [1], [2], [3]], help='transfer learning tasks')
     parser.add_argument('--task', type=str, default='0-123', help='transfer learning tasks')
     parser.add_argument('--num_layers', type=str, default='2', help='num_layers in model')
     parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2 ')
