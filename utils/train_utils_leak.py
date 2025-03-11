@@ -23,8 +23,8 @@ import torch.nn.functional as F
 
 import datasets as datasets
 import models.LORA_Net_12345 as models
-import models.LORA_Net_12345 as model_Ftest
-import models.wd as model_wd
+#import models.LORA_Net_12345 as model_Ftest
+#import models.wd as model_wd
 
 
 import os  
@@ -35,19 +35,19 @@ from collections import OrderedDict
 
 from sklearn.preprocessing import MultiLabelBinarizer
 
-def set_seed(seed=99):
-    random.seed(seed)  # 设置 Python 随机种子
-    np.random.seed(seed)  # 设置 NumPy 随机种子
-    torch.manual_seed(seed)  # 设置 PyTorch CPU 的随机种子
-    torch.cuda.manual_seed(seed)  # 如果使用 GPU，设置 GPU 的随机种子
-    torch.cuda.manual_seed_all(seed)  # 如果使用多个 GPU，设置所有 GPU 的随机种子
+# def set_seed(seed=99):
+#     random.seed(seed)  # 设置 Python 随机种子
+#     np.random.seed(seed)  # 设置 NumPy 随机种子
+#     torch.manual_seed(seed)  # 设置 PyTorch CPU 的随机种子
+#     torch.cuda.manual_seed(seed)  # 如果使用 GPU，设置 GPU 的随机种子
+#     torch.cuda.manual_seed_all(seed)  # 如果使用多个 GPU，设置所有 GPU 的随机种子
 
-    # 保证结果的可复现性
-    torch.backends.cudnn.deterministic = True  # 保证每次返回的卷积算法是确定的
-    torch.backends.cudnn.benchmark = False     # 如果为 True，系统会自动寻找最适合当前配置的高效算法，但会引入随机性
+#     # 保证结果的可复现性
+#     torch.backends.cudnn.deterministic = True  # 保证每次返回的卷积算法是确定的
+#     torch.backends.cudnn.benchmark = False     # 如果为 True，系统会自动寻找最适合当前配置的高效算法，但会引入随机性
 
-# 使用特定的随机种子
-set_seed(99)
+# # 使用特定的随机种子
+# set_seed(99)
 
 
 
@@ -108,16 +108,17 @@ class train_utils(object):
         # 加载所有目标域的数据集
         # self.data_test = Dataset(args.data_dir, args.transfer_task, args.normlizetype).data_test()     
 
-        self.dataloaders = {x: torch.utils.data.DataLoader(self.datasets[x], batch_size=args.batch_size,drop_last=True,
+        self.dataloaders = {x: torch.utils.data.DataLoader(self.datasets[x], batch_size=args.batch_size, drop_last=True,
                                                            shuffle=(True if x.split('_')[1] == 'train' else False),
                                                            num_workers=args.num_workers,
                                                            pin_memory=(True if self.device == 'cuda' else False),
-                                                           worker_init_fn=lambda worker_id: np.random.seed(99))
+                                                           #worker_init_fn=lambda worker_id: np.random.seed(99)
+                                                           )
                             for x in ['source_train', 'source_val', 'target_val']}
         
         # Define the model
         self.model = getattr(models,args.model_name)(args.pretrained)
-        self.model_Ftest = getattr(model_Ftest, args.model_Fine_name)(args.pretrained)
+#        self.model_Ftest = getattr(model_Ftest, args.model_Fine_name)(args.pretrained)
 
 
         
@@ -217,11 +218,11 @@ class train_utils(object):
 
         return self.input_signals
     
-    def wd(self,input):
+    # def wd(self,input):
 
-      self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
+    #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
       
-      return self.wd(input) 
+    #   return self.wd(input) 
     
 
 
@@ -324,12 +325,7 @@ class train_utils(object):
                                 pos,_ = self.model_eval(inputs.to(self.device))
                         else: 
                             if  phase != 'target_val':
-
-                                inputs_new = self.set_input(inputs)  #信号变换#
-                                # print(type(inputs_new.shape))
-                                # print(inputs_new.shape)
-
-                                pos,_ = self.model(inputs_new.to(self.device))  ##信号张量输入##
+                                pos,_ = self.model(inputs.to(self.device)) ###
                             else:
                                 pos,_ = self.model(inputs.to(self.device))
 
@@ -374,7 +370,7 @@ class train_utils(object):
                                 step_start = temp_time
                                 batch_time = train_time / args.print_step if step != 0 else train_time
                                 sample_per_sec = 1.0*batch_count/train_time  
-                                logging.info('Epoch: {} [{}/{}], Train Loss : {:.4f} ,Train Acc pos: {:.4f} ,''{:.1f} examples/sec {:.2f} sec/batch'.format(
+                                logging.info('Epoch: {} [{}/{}], Train Loss : {:.4f} Train Acc pos: {:.4f} ,''{:.1f} examples/sec {:.2f} sec/batch'.format(
                                     epoch, batch_idx*len(inputs), len(self.dataloaders[phase].dataset),batch_loss, batch_acc_pos,  sample_per_sec, batch_time)
                                     )
                                 batch_acc_pos = 0
@@ -424,7 +420,12 @@ class train_utils(object):
                             correct_pos=0
                             inputs_all = label_pos =[]
                             acc_pos = 0
-                            count = 0         
+                            count = 0 
+                            
+                            # 存储所有真实标签和预测标签用来计算精确度、召回率、F1
+                            all_label_pos = []
+                            all_pred_pos = []   
+
                             # 将数据传递给模型进行测试,假设你的模型是 model,对数据进行预测
                             for batch_idx, (inputs, label_pos,label_cls) in enumerate(self.dataloaders['target_val']):
                                 inputs_all = inputs
@@ -438,11 +439,50 @@ class train_utils(object):
                                 correct_pos = torch.eq(pred_pos, label_pos).float().sum().item()
                                 acc_pos += correct_pos
                                 count += inputs.size(0)
+                                
+                                # 收集当前 batch 的预测和真实标签
+                                all_label_pos.extend(label_pos.cpu().numpy())
+                                all_pred_pos.extend(pred_pos.cpu().numpy())
 
-                            acc_pos = acc_pos / count  
+                            acc_pos = acc_pos / count 
+
+
                             logging.info('epoch: {} , acc_pos : {:.4f}, Cost {:.1f} sec'.format(
                                 epoch, acc_pos , time.time() - test_start)
-                                )  
+                                ) 
+                            # 转换为 numpy 数组
+                            all_label_pos = np.array(all_label_pos)
+                            all_pred_pos = np.array(all_pred_pos)
+
+                            # 计算精确率（Precision）
+                            precision_macro = precision_score(all_label_pos, all_pred_pos, average='macro')  # 宏平均
+                            precision_micro = precision_score(all_label_pos, all_pred_pos, average='micro')  # 微平均
+                            precision_weighted = precision_score(all_label_pos, all_pred_pos, average='weighted')  # 加权平均
+
+                            # 计算召回率（Recall）
+                            recall_macro = recall_score(all_label_pos, all_pred_pos, average='macro')
+                            recall_micro = recall_score(all_label_pos, all_pred_pos, average='micro')
+                            recall_weighted = recall_score(all_label_pos, all_pred_pos, average='weighted')
+
+                            # 计算 F1 值
+                            f1_macro = f1_score(all_label_pos, all_pred_pos, average='macro')
+                            f1_micro = f1_score(all_label_pos, all_pred_pos, average='micro')
+                            f1_weighted = f1_score(all_label_pos, all_pred_pos, average='weighted')
+
+                            # 打印日志
+                            logging.info('epoch: {} , Precision (Macro): {:.4f}, Recall (Macro): {:.4f}, F1 (Macro): {:.4f}'.format(
+                                epoch, precision_macro, recall_macro, f1_macro))
+                            logging.info('epoch: {} ,Precision (Micro): {:.4f}, Recall (Micro): {:.4f}, F1 (Micro): {:.4f}'.format(
+                                epoch, precision_micro, recall_micro, f1_micro))
+                            logging.info('epoch: {} ,Precision (Weighted): {:.4f}, Recall (Weighted): {:.4f}, F1 (Weighted): {:.4f}'.format(
+                                epoch, precision_weighted, recall_weighted, f1_weighted)) 
+                            
+                            classification_report_str = classification_report(all_label_pos, all_pred_pos)
+
+                            # 记录分类报告
+                            logging.info("\nClassification Report:\n%s", classification_report_str)
+
+                   
                     #################  Fine start ######################        
                     if epoch == args.max_epoch-1 and args.Fine:
 

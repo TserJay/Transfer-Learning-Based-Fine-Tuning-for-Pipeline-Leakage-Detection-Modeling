@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2 ')
     parser.add_argument('--normlizetype', type=str, default='mean-std', help='nomalization type')
     parser.add_argument('--set_input', type=str, default='T F', help='nomalization type')
-    parser.add_argument('--eval_test_all', type=bool, default=False, help='')
+    parser.add_argument('--eval_test_all', type=bool, default=True, help='')
 
     # adabn parameters
     parser.add_argument('--adabn', type=bool, default=False, help='whether using adabn')
