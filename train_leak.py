@@ -30,7 +30,7 @@ def parse_args():
     # parser.add_argument('--data_name', type=str, default='JNU', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
     # parser.add_argument('--data_dir', type=str, default=r'/home/t/projects/UDTL_master/data/JNU', help='the directory of the data')
-    parser.add_argument('--transfer_task', type=list, default=[[0], [1], [2], [3]], help='transfer learning tasks')
+    parser.add_argument('--transfer_task', type=list, default=[[0] , [1], [2], [3]], help='transfer learning tasks')
     parser.add_argument('--task', type=str, default='0-123', help='transfer learning tasks')
     parser.add_argument('--num_layers', type=str, default='2', help='num_layers in model')
     parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2 ')
@@ -60,24 +60,7 @@ def parse_args():
     parser.add_argument('--Fine', type=bool, default=False, help='是否进行Fine')
     parser.add_argument('--Fine_1', type=bool, default=True, help='是否进行微调训练')  
 
-    parser.add_argument('--model_Fine_name', type=str, default='LORA_Net_12345', help='加载微调模型')
-
-    parser.add_argument('--Fine_number', type=int, default=1, help='use one-shot、three-shot、five-shot、ten-shot for every classes in taget domain')
-
-
-    
-    #parser.add_argument('--model_Fine', type=str, default=r'E:\projects\UDTL-LoRA\checkpoint_adabn\1120-200710_LORA_Net_12345_F0-123-[1]\fine_tuned_2_0.9950980392156865_1.pth' , help='')
-   
-    # parser.add_argument('--param_zero', type=bool, default=False , help='参数清零')
-
-    # parser.add_argument('--Fine_epoch', type=int, default='50' , help='')
-    # parser.add_argument('--Fine_lr', type=float, default='0.01' , help='')
-
-
-
-    # parser.add_argument('--Fine_classes', type=bool, default=True, help='是否微调类别数')
-    # parser.add_argument('--Fine_num_classes', type=int, default=6, help='微调任务中泄露孔径类别数')
-
+  
 
     # optimization information
     parser.add_argument('--opt', type=str, choices=['sgd', 'adam'], default='adam', help='the optimizer')
