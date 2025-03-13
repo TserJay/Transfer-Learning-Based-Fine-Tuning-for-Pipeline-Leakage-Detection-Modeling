@@ -7,11 +7,11 @@ import math
 from einops import rearrange
 from torch.utils.hooks import RemovableHandle
 
-# from models.embed import DepthwiseSeparableConv1d, DataEmbedding, MLP
+import torch.nn.functional as F
 
+# from models.embed import DepthwiseSeparableConv1d, DataEmbedding, MLP
 # import summary
 # from torchsummary import summary
-
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)   多层感知器FFN"""
@@ -27,9 +27,6 @@ class MLP(nn.Module):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
-
-  
-    
 #全局平均池化+1*1卷积核+ReLu+1*1卷积核+Sigmoid
 class SE_Block(nn.Module):
     def __init__(self, inchannel, ratio=16):
@@ -43,7 +40,7 @@ class SE_Block(nn.Module):
             nn.Linear(inchannel // ratio, inchannel, bias=False),  # 从 c/r -> c
             nn.Sigmoid()
         )
- 
+
     def forward(self, x):
             # 读取批数据图片数量及通道数
             b, c, h = x.size()
@@ -55,8 +52,6 @@ class SE_Block(nn.Module):
             
             # Fscale操作：将得到的权重乘以原来的特征图x
             return x * y.expand_as(x)
-
-
 
 
 class Bottle2neck(nn.Module):
@@ -217,8 +212,6 @@ class LoraLayer(nn.Module):
 
 
     
-
-
 # class MyModel(nn.Module):
 #     def __init__(self, input_channels, in_features, out_features):
 #         super(MyModel, self).__init__()
@@ -230,7 +223,6 @@ class LoraLayer(nn.Module):
 #         x = x.view(x.size(0), -1)  # 展平，准备输入到 LoraLayer
 #         return self.lora_layer(x, adapter_name)  # 调用 LoRA 层
 
-import torch.nn.functional as F
 
 class FusedConvBNReLU(nn.Module):
     def __init__(self, conv, bn):
@@ -242,8 +234,6 @@ class FusedConvBNReLU(nn.Module):
         x = self.conv(x)
         x = self.bn(x)
         return F.relu(x)
-
-
 
 
 class Res2Net(nn.Module):
@@ -353,53 +343,37 @@ class Res2Net(nn.Module):
         return nn.Sequential(*layers)
     
     def forward(self, x, adapter_name):
-
-       
-        
         y = x
-
-        # 融合 Conv + BN + ReLU
-        x = self.fused_conv_bn_relu1(x)
+        
+        x = self.fused_conv_bn_relu1(x)  # 融合 Conv + BN + ReLU
         y = self.fused_conv_bn_relu2(y)
  
-        # 计算 LoraLayer 并缓存结果
         lora_outputs = [
             self.LoraLayer_1(x, adapter_name),
             self.LoraLayer_2(x, adapter_name),
             self.LoraLayer_3(x, adapter_name),
             self.LoraLayer_4(x, adapter_name),
             self.LoraLayer_5(y, adapter_name),
-            ]
-
-        
-        # lora_fc_outputs = torch.cat([
-        #     self.lora_fc_2(lora_outputs[:, 1].view(-1, 64)).view(32, 256, 896),
-        #     self.lora_fc_3(lora_outputs[:, 2].view(-1, 64)).view(32, 512, 448),
-        #     self.lora_fc_4(lora_outputs[:, 3].view(-1, 64)).view(32, 256, 224),
-        # ], dim=1)
+            ]         # 计算 LoraLayer 并缓存结果
 
         # 融合点1
-       
         x = x + lora_outputs[0]
         x = self.layer1(x)
         x, _ = self.BiLSTM1(x)
 
         # 融合点2
-
         lora_fc_out_2 = self.lora_fc_2(lora_outputs[1].reshape(-1, 64)).reshape(32, 256, 896)
         x = x + lora_fc_out_2
         x = self.layer2(x)
         x, _ = self.BiLSTM2(x)
 
         # 融合点3
-        
         lora_fc_out_3 = self.lora_fc_3(lora_outputs[2].reshape(-1, 64)).reshape(32, 512, 448)
         x = x + lora_fc_out_3
         x = self.layer3(x)
         x, _ = self.BiLSTM3(x)
 
-        # 融合点4
-   
+        # 融合点4  
         lora_fc_out_4 = self.lora_fc_4(lora_outputs[3].reshape(-1, 64)).reshape(32, 256, 224)
         x = x + lora_fc_out_4
         x = self.layer4(x)
