@@ -50,7 +50,7 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 def apply_dropout(m):
     if type(m) == nn.Dropout:
         m.eval()
-class test_utils(object):
+class tune_utils(object):
     def __init__(self, args, save_dir):
         self.args = args
         self.save_dir = save_dir

@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from utils.logger import setlogger
 import logging
-from utils.test_utils import test_utils
+from utils.tune_utils import tune_utils
 
 import torch
 import warnings
@@ -98,7 +98,7 @@ if __name__ == '__main__':
         logging.info("{}: {}".format(k, v))
     
 
-    test = test_utils(args, save_dir)
+    test = tune_utils(args, save_dir)
     test.setup()
     test.test()
 
