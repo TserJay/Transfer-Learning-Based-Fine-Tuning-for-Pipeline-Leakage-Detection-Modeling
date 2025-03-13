@@ -26,6 +26,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 
 
 import models.LORA_Net_12345 as model_test
+from itertools import cycle  # 让 target batch 轮流使用
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
@@ -103,24 +104,8 @@ class tune_utils(object):
         # Define the model
         # self.model = getattr(models,args.model_name)
         self.model_test = getattr(model_test, args.model_Fine_name)(args.pretrained)
-
-
-    def set_input(self, input):
-        """input: a dictionary that contains the data itself and its metadata information.
-        example:
-            input_signals.size() = B, C, 1, S
-        """
-        data_set = []
-        for data in input:
-            shift = np.random.randint(-100, 400)
-            # 随机生成一个偏移量shift
-            scale = np.random.uniform(0.5, 1.5)
-            # 随机生成一个缩放因子scale
-            data_ = np.roll( data , shift ) * scale   
-            data_set.append(data_)
-            self.input_signals = torch.tensor(data_set)
-
-        return self.input_signals
+    
+    
 
     def test(self):
         """
@@ -142,25 +127,107 @@ class tune_utils(object):
                 for i, layer in enumerate(self.layers):
                     x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
                 return x
+            
+        # define mmd_loss
+        def compute_mmd_loss(source_features, target_features, kernel_mul=2.0, kernel_num=5):
+                    
+            batch_size = source_features.size(0)
+            
+            # 合并源域和目标域特征
+            total_features = torch.cat([source_features, target_features], dim=0)  # [2*batch_size, feature_dim]
+            
+            # 计算两两欧式距离：利用广播机制，计算 L2 距离矩阵
+            total0 = total_features.unsqueeze(0).expand(total_features.size(0), total_features.size(0), total_features.size(1))
+            total1 = total_features.unsqueeze(1).expand(total_features.size(0), total_features.size(0), total_features.size(1))
+            L2_distance = ((total0 - total1) ** 2).sum(2)
+            
+            # 带宽设置：这里取中值，可以防止带宽太小或者太大
+            bandwidth = torch.median(L2_distance.detach())
+            if bandwidth.item() == 0:
+                bandwidth = torch.tensor(1.0).to(source_features.device)
+            # 生成一组带宽参数
+            bandwidth_list = [bandwidth * (kernel_mul**(i - kernel_num//2)) for i in range(kernel_num)]
+            
+            # 对每个带宽计算 RBF 核，并求均值
+            kernels = [torch.exp(-L2_distance / (bw + 1e-8)) for bw in bandwidth_list]
+            kernel_matrix = sum(kernels)  # [2*batch_size, 2*batch_size]
+            
+            # 划分核矩阵
+            XX = kernel_matrix[:batch_size, :batch_size]
+            YY = kernel_matrix[batch_size:, batch_size:]
+            XY = kernel_matrix[:batch_size, batch_size:]
+            YX = kernel_matrix[batch_size:, :batch_size]
+            
+            # 计算 MMD：源域内部、目标域内部和跨域部分
+            mmd_loss = XX.mean() + YY.mean() - XY.mean() - YX.mean()
+            return mmd_loss
+            
 
                                                 
         # 定义微调的模型结构                        
-        class MLPModel(nn.Module):
-            def __init__(self, base_model,num_classes=6):
-                super(MLPModel, self).__init__()
-                self.base_model = base_model
-                if args.Fine_classes:
-                    self.tar_MLP = MLP(input_dim=32, hidden_dim=64, output_dim=16, num_layers=1)
-                    self.fc = nn.Linear(16,num_classes)
+        # class MLPModel(nn.Module):
+        #     def __init__(self, base_model, num_classes):
+        #         super(MLPModel, self).__init__()
+        #         self.base_model = base_model
+        #         if args.Fine_classes:
+        #             self.tar_MLP = MLP(input_dim=32, hidden_dim=64, output_dim=16, num_layers=1)
+        #             self.fc = nn.Linear(16,num_classes)
 
+        #     def forward(self, x):
+        #         # with torch.no_grad():
+
+        #         pos,out = self.base_model(x)
+        #         if args.Fine_classes:
+        #             x = self.tar_MLP(out)
+        #             pos = self.fc(x)
+        #         return pos
+            
+        class MMDModel(nn.Module):
+            def __init__(self, base_model, num_classes):
+
+                super(MMDModel, self).__init__()
+                self.feature_extractor = base_model
+                self.tar_MLP = MLP(input_dim=32, hidden_dim=64, output_dim=16, num_layers=1)
+                self.fc = nn.Linear(16,num_classes)
+               
             def forward(self, x):
-                # with torch.no_grad():
+               
+                pos,out = self.feature_extractor(x)
+                x = self.tar_MLP(out)
+                pos = self.fc(x)
+                return pos,out
+            
+                # # 分别提取源域和目标域特征
+                # source_features = self.feature_extractor(x_source)
+                # target_features = self.feature_extractor(x_target)
+                
+                # # 对源域特征进行分类预测
+                # logits = self.classifier(source_features)
+                
+                # # 计算 MMD 损失
+                # mmd_loss = compute_mmd_loss(source_features, target_features)
+                
+                # return logits, mmd_loss
 
-                pos,out = self.base_model(x)
-                if args.Fine_classes:
-                    x = self.tar_MLP(out)
-                    pos = self.fc(x)
-                return pos
+        # def train_epoch(model, source_loader, target_loader, optimizer, alpha=1.0, lambda_mmd=0.1, device='cuda'):
+      
+        #     logits, mmd_loss = model(x_source, x_target)
+            
+        #     # 交叉熵损失：使用源域真实标签
+        #     ce_loss = ce_loss_fn(logits, y_source)
+            
+        #     # 联合损失
+        #     loss = alpha * ce_loss + lambda_mmd * mmd_loss
+            
+        #     loss.backward()
+        #     optimizer.step()
+            
+        #     total_loss_value += loss.item()
+        #     total_batches += 1
+
+        # return total_loss_value / total_batches
+
+
 
         Final_acc=  0
         acc_list = []
@@ -185,6 +252,13 @@ class tune_utils(object):
 
             # 创建集合，用于存储不同组合的(pos, cls)标签
             unique_combinations = set()
+
+            # num_epochs = 10
+            # alpha = 1.0      # 交叉熵损失权重
+            lambda_mmd = 0.1 # MMD 损失权重
+
+            # 获取数据加载器
+            source_dataset = self.dataloaders['source_train']
 
             # 遍历目标数据集，找到每个不同的(pos, cls)组合
             target_dataset = self.datasets['target_val']
@@ -230,29 +304,29 @@ class tune_utils(object):
             base_model.load_state_dict(torch.load(args.model_Fine))
             # base_model.eval()
 
-            mlp_model = MLPModel(base_model, num_classes=args.Fine_num_classes).to(self.device)
+            model_tune = MMDModel(base_model, num_classes=args.Fine_num_classes).to(self.device)
             # 冻结部分层的参数
-            layers_to_freeze = [#mlp_model.base_model.backbone.conv1, mlp_model.base_model.backbone.bn1,mlp_model.base_model.backbone.relu,
+            layers_to_freeze = [#model_tune.base_model.backbone.conv1, model_tune.base_model.backbone.bn1,model_tune.base_model.backbone.relu,
                                 
-                                # mlp_model.base_model.backbone.layer1,mlp_model.base_model.backbone.BiLSTM1,
-                                # mlp_model.base_model.backbone.layer2,mlp_model.base_model.backbone.BiLSTM2,
-                                # mlp_model.base_model.backbone.layer3,mlp_model.base_model.backbone.BiLSTM3, 
-                                # mlp_model.base_model.backbone.layer4,mlp_model.base_model.BiLSTM1,
-                                # mlp_model.base_model.ap,
+                                # model_tune.base_model.backbone.layer1,model_tune.base_model.backbone.BiLSTM1,
+                                # model_tune.base_model.backbone.layer2,model_tune.base_model.backbone.BiLSTM2,
+                                # model_tune.base_model.backbone.layer3,model_tune.base_model.backbone.BiLSTM3, 
+                                # model_tune.base_model.backbone.layer4,model_tune.base_model.BiLSTM1,
+                                # model_tune.base_model.ap,
 
-                                # mlp_model.base_model.backbone.LoraLayer_1,mlp_model.base_model.backbone.LoraLayer_2,
-                                # mlp_model.base_model.backbone.LoraLayer_3,
+                                # model_tune.base_model.backbone.LoraLayer_1,model_tune.base_model.backbone.LoraLayer_2,
+                                # model_tune.base_model.backbone.LoraLayer_3,
                             
-                                # mlp_model.base_model.backbone.LoraLayer_4,
+                                # model_tune.base_model.backbone.LoraLayer_4,
 
-                                # mlp_model.base_model.backbone.conv2,mlp_model.base_model.backbone.bn2,mlp_model.base_model.backbone.relu,
+                                # model_tune.base_model.backbone.conv2,model_tune.base_model.backbone.bn2,model_tune.base_model.backbone.relu,
 
                                 
                                 
-                                # mlp_model.base_model.projetion_cls,
+                                # model_tune.base_model.projetion_cls,
 
-                                # mlp_model.base_model.projetion_pos_1,
-                                # mlp_model.base_model.fc1
+                                # model_tune.base_model.projetion_pos_1,
+                                # model_tune.base_model.fc1
 
 
                                 ]
@@ -261,7 +335,7 @@ class tune_utils(object):
             for layer in layers_to_freeze:
                 for param in layer.parameters():
                     param.requires_grad = False
-            for name, param in mlp_model.named_parameters():
+            for name, param in model_tune.named_parameters():
                 if param.requires_grad:
                     logging.info(f"{name}: Train")
                 else:
@@ -269,52 +343,74 @@ class tune_utils(object):
 
      
             Fine_acc_pos=0
- 
             Fine_precision_macro = 0
             Fine_precision_micro = 0 
             Fine_precision_weighted = 0 
-
             Fine_recall_macro = 0
             Fine_recall_micro = 0
             Fine_recall_weighted = 0
-
             Fine_f1_macro = 0 
             Fine_f1_micro = 0
             Fine_f1_weighted = 0
 
            
-            optimizer = optim.SGD(filter(lambda p: p.requires_grad, mlp_model.parameters()), lr=args.Fine_lr, momentum=0.9)
+            optimizer = optim.SGD(filter(lambda p: p.requires_grad, model_tune.parameters()), lr=args.Fine_lr, momentum=0.9)
             criterion = nn.CrossEntropyLoss()
     
             # 在目标域数据上微调模型
             num_epochs = args.Fine_epoch
             
             for epoch in range(num_epochs):
-                mlp_model.train()
+                model_tune.train()
                 
                 running_loss = 0.0
                 #loss = torch.tensor(0.0).cuda()  # 初始化 loss
                 #print(f"Number of batches in loader: {len(few_shot_loader)}")
                 
-                for inputs, pos, _ in few_shot_loader:
+                # 让 source_loader 的 batch 轮流使用
+                source_loader_iter = cycle(source_dataset)  
+                
+                for inputs, pos, _ in few_shot_loader:  # few_shot_loader 是目标域
                     optimizer.zero_grad()
-                    inputs = inputs.cuda()
-                    pos = pos.cuda()
-                    outputs = mlp_model(inputs)
-                    # print(outputs.shape)
-                    # print(outputs)
-                    # outputs = args.target_label[args.target_classes[0][mlp_model(inputs).item()]][0]
 
-                    loss = criterion(outputs, pos)
+                    # 目标域数据
+                    inputs, pos = inputs.cuda(), pos.cuda()
+                    outputs, out_target = model_tune(inputs)  # 提取目标域特征
+
+                    # 取一个源域 batch
+                    source_inputs, _, _ = next(source_loader_iter)
+                    source_inputs = source_inputs.cuda()
+                    _, out_source = model_tune(source_inputs)  # 提取源域特征
+
+                    # 计算 MMD 损失
+                    mmd_loss = compute_mmd_loss(out_source, out_target)
+
+                    # 计算交叉熵损失
+                  
+                    
+                    # print(f"pos shape: {pos.shape}")
+
+                    # # 如果 pos 是 one-hot，转换成类别索引
+                    # if len(pos.shape) > 1 and pos.shape[1] > 1:
+                    #     pos = pos.argmax(dim=1)
+
+                    # 计算交叉熵损失
+                    ce_loss = criterion(outputs, pos)
+                    # ce_loss = criterion(outputs, pos.argmax(dim=1))
+
+                    # 总损失
+                    loss = ce_loss + lambda_mmd * mmd_loss
                     loss.backward()
                     optimizer.step()
+
                     running_loss += loss.item()
 
-                logging.info('Fine-Epoch {}/{}, Fine-Loss: {}'.format(epoch+1,num_epochs,loss))
+    
+                logging.info('Fine-Epoch {}/{}, Fine-Loss: {}'.format(epoch+1,num_epochs,running_loss))
                 
                 # 最后10轮对Fine后的模型进行测试
                 if epoch>num_epochs-11:    
-                    mlp_model.eval()
+                    model_tune.eval()
                     correct_pos=0
                     inputs_all = []
                     label_pos =[]
@@ -329,7 +425,7 @@ class tune_utils(object):
                         inputs_all = inputs_all.to(self.device)
                         label_pos = label_pos.to(self.device) 
 
-                        pos_test= mlp_model(inputs_all).to(self.device)
+                        pos_test,_ = model_tune(inputs_all)
                         pred_pos = pos_test.argmax(dim=1)
 
                         correct_pos = torch.eq(pred_pos, label_pos).float().sum().item()
@@ -408,7 +504,7 @@ class tune_utils(object):
                     
             
                     
-                    # torch.save(mlp_model.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
+                    torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
                 
                 if epoch == num_epochs-1:
                     Fine_acc_pos = Fine_acc_pos/10
@@ -445,7 +541,7 @@ class tune_utils(object):
                     Fine_f1_weighted_list.append(Fine_f1_weighted) 
         
                     # 保存微调后的模型
-                    # torch.save(mlp_model.state_dict(),os.path.join(self.save_dir,'fine_tuned_{}_{}.pth'.format(acc_pos,Fine_number)))
+                    # torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'fine_tuned_{}_{}.pth'.format(acc_pos,Fine_number)))
                 
     
     
