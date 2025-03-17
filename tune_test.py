@@ -30,8 +30,8 @@ def parse_args():
     parser.add_argument('--model_Fine_name', type=str, default='LORA_Net_12345', help='加载微调模型')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
-    parser.add_argument('--transfer_task', type=list, default=[[3],[0], [1], [2]], help='transfer learning tasks')
-    parser.add_argument('--task', type=str, default='F3-012-[1]', help='transfer learning tasks')
+    parser.add_argument('--transfer_task', type=list, default=[[0],[1], [2], [3]], help='transfer learning tasks')
+    parser.add_argument('--task', type=str, default='F0-123-[1]', help='transfer learning tasks')
     parser.add_argument('--set_input', type=str, default='T F', help='nomalization type')
  
 
@@ -58,7 +58,7 @@ def parse_args():
     
     
     parser.add_argument('--Fine_number', type=int, default=1, help='use one-shot、three-shot、five-shot、ten-shot for every classes in taget domain')
-    parser.add_argument('--model_Fine', type=str, default=r'E:\projects\TL_Tune\checkpoint_adabn\0313-201639_LORA_Net_12345_3-012\85-0.7421-best_model.pth' , help='')
+    parser.add_argument('--model_Fine', type=str, default=r'E:\projects\TL_Tune\checkpoint_adabn\0315-103606_LORA_Net_12345_0-123\146-0.9757-best_model.pth' , help='')
     parser.add_argument('--param_zero', type=bool, default=False , help='参数清零')
     parser.add_argument('--Fine_epoch', type=int, default='50' , help='')
     parser.add_argument('--Fine_lr', type=float, default='0.01' , help='')

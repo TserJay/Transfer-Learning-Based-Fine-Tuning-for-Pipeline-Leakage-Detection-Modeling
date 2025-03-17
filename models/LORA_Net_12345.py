@@ -48,7 +48,6 @@ class SE_Block(nn.Module):
             y = self.gap(x).view(b, c)
             # Fex操作：经全连接层输出（b，c，1，1）矩阵
             y = self.fc(y).view(b, c, 1)
-
             
             # Fscale操作：将得到的权重乘以原来的特征图x
             return x * y.expand_as(x)
@@ -402,16 +401,8 @@ class LORA_Net_12345(nn.Module):
         '''
         super(LORA_Net_12345, self).__init__()
         
-        # self.sos = nn.Embedding(3, 1792)
-        # self.flag = torch.LongTensor([0, 1, 2]).to(0)
+       
 
-        # self.backbone = nn.Sequential(
-        #     DepthwiseSeparableConv1d(in_channels=in_channel, out_channels=32, kernel_size=kernel_size, stride=1, activate=True, bias=False),
-        #     DepthwiseSeparableConv1d(in_channels=32, out_channels=64, kernel_size=kernel_size, stride=2, activate=True, bias=False),
-        #     DepthwiseSeparableConv1d(in_channels=64, out_channels=in_embd, kernel_size=kernel_size, stride=2, activate=True, bias=False),
-        # )
-        
-    
         self.backbone = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
         # basewidth= 448   1792/448=4
         
@@ -481,64 +472,16 @@ class LORA_Net_12345(nn.Module):
 
 
     def forward(self, x ):
-        # print(x.shape)
+
         # x = self.backbone1(x)
-        # print(x.shape)
-    
-
         x,y = self.backbone(x,'adapter1')  #[32, 128, 113]  源域分支
-        # print(x.shape)
-        
-        
-        # x = x.permute(0, 2, 1)
-        # print(x.shape)
-        x, _ = self.BiLSTM1(x.permute(1, 0, 2))   #  ([32, 32, 128])
-        # print(x.shape)    
-       
-       
-       
-        ###############
-        # print(x.shape)
-        # print(y.shape)
+        x, _ = self.BiLSTM1(x.permute(1, 0, 2))   #  ([32, 32, 128])      
         x = x+y   # 绕过4层DPN网络
-        #########################
-
-   
-#         x = self.enc_embedding_en(x, None)
-
-#         # print(x.shape)
-       
-#         x = self.transformer_encoder(x)
-#         # print(x.shape)
-  
-#                
-#         # print(x.shape)   
         x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
-
-#         # print(x_1.shape)
-# ###############################################################################
-
-        # if domain == 'source_train' or 'source_val':
-        #     self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=6, num_layers=1).to(x_1.device)
-        #     pos = self.projetion_pos_1(x_1)  #孔径位置信息
-        # elif domain == 'target_val':
-        #     self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1).to(x_1.device)
-        #     pos = self.projetion_pos_1(x_1)  #孔径位置信息
-        
         view = self.projetion_pos_1(x_1)  #孔径位置信息
         pos = self.fc1(view)
 	
 
-###############################################################################
-
-        # print(pos.shape)
-        # print(cls.shape)
-
-        # x = self.ap(x.permute(0, 2, 1)).squeeze(-1)
-
-        # out_x = self.projetion_huigui(x_1)
-        # out_fenlei = self.projetion_leibie(x_1)
-        # return out_huigui, out_fenlei, x.permute(1, 2, 0)[:, :, ::16]
         return pos,view
 
 

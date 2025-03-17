@@ -504,7 +504,7 @@ class tune_utils(object):
                     
             
                     
-                    torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
+                    #torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
                 
                 if epoch == num_epochs-1:
                     Fine_acc_pos = Fine_acc_pos/10
