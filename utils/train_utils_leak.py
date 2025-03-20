@@ -49,7 +49,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 # # 使用特定的随机种子
 # set_seed(99)
 
-
+ # ** 记忆池大小 **
+MEMORY_SIZE = 2000
 
 def apply_dropout(m):
     if type(m) == nn.Dropout:
@@ -225,6 +226,42 @@ class train_utils(object):
     #   return self.wd(input) 
     
 
+   
+    memory_buffer = {"x": [], "y": [], "acc": []}  # 存储信号数据、标签、对应准确率
+
+    
+    # 记忆池更新函数，基于准确率优化记忆池，替换低质量样本
+    def update_memory(x_batch, y_batch, batch_accuracy):
+        # 定义全局变量 记忆池
+        global memory_buffer
+
+        x_batch = x_batch.cpu().numpy().tolist()
+        y_batch = y_batch.cpu().numpy().tolist()
+
+        # 计算记忆池平均准确率
+        memory_avg_acc = np.mean(memory_buffer["acc"]) if memory_buffer["acc"] else 0
+
+        if batch_accuracy > memory_avg_acc:
+            print(f"🔄 当前 batch 准确率 {batch_accuracy:.2f} > 记忆池平均 {memory_avg_acc:.2f}，进行优化")
+
+            if len(memory_buffer["x"]) < MEMORY_SIZE:
+                # 记忆池未满，直接加入
+                memory_buffer["x"].extend(x_batch)
+                memory_buffer["y"].extend(y_batch)
+                memory_buffer["acc"].extend([batch_accuracy] * len(x_batch))
+            else:
+                # 记忆池已满，找到准确率最低的样本进行替换
+                sorted_indices = np.argsort(memory_buffer["acc"])  # 按准确率升序排序
+                worst_indices = sorted_indices[:len(x_batch)]  # 选择最差的样本
+
+                for i, idx in enumerate(worst_indices):
+                    memory_buffer["x"][idx] = x_batch[i]
+                    memory_buffer["y"][idx] = y_batch[i]
+                    memory_buffer["acc"][idx] = batch_accuracy  # 更新准确率
+
+                print(f"✅ 替换 {len(x_batch)} 个低准确率样本，保持记忆池高质量！")
+        else:
+            print(f"⚠ 当前 batch 准确率 {batch_accuracy:.2f} ≤ 记忆池平均 {memory_avg_acc:.2f}，不加入记忆池")
 
     def train(self):
         """
@@ -238,11 +275,6 @@ class train_utils(object):
         batch_acc_pos = 0
         best_acc_pos = 0.0
         step_start = time.time()
-
-        # 1. 记忆池（保存高准确率数据）
-        memory_buffer = {"x": [], "y": []}  
-        
-
 
         for epoch in range(self.start_epoch, args.max_epoch):
 
@@ -315,9 +347,8 @@ class train_utils(object):
                         self.model.eval()
 
                 for batch_idx, (inputs, label_pos,_) in enumerate(self.dataloaders[phase]):
-                    # print(inputs.shape)
-                    # inputs = self.set_input(inputs)    
-                    label_pos = label_pos.to(self.device)
+                    
+
                     # Do the learning process, in val, we do not care about the gradient for relaxing
                     with torch.set_grad_enabled(phase == 'source_train'):
                         # forward
@@ -328,7 +359,9 @@ class train_utils(object):
                                 pos,_ = self.model_eval(inputs.to(self.device))
                         else: 
                             if  phase != 'target_val':
-                                pos,_ = self.model(self.set_input(inputs).to(self.device)) # phase = 'source_train'
+                                inputs_train = self.set_input(inputs)  
+                                pos,_ = self.model(inputs_train.to(self.device)) # phase = 'source_train'
+                                print(inputs_train.shape)
                             else:
                                 pos,_ = self.model(inputs.to(self.device)) # phase = 'target_val'
 
