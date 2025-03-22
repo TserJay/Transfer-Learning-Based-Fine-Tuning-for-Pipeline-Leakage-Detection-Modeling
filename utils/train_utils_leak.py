@@ -21,6 +21,7 @@ import torch.nn.functional as F
 
 import datasets as datasets
 import models.Net as models
+from itertools import cycle  # 让 target batch 轮流使用
 
 
 
@@ -220,6 +221,86 @@ class train_utils(object):
     #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
       
     #   return self.wd(input) 
+
+    #欧式距离;RBF核函数(多尺度); 欧式距离的中位数作为带宽
+    def compute_mmd_loss(self, source_features, target_features, kernel_mul=2.0, kernel_num=5):
+        # print(f"source_features type: {type(source_features)}")
+        # print(f"target_features type: {type(target_features)}")  
+        batch_size = source_features.size(0)
+        
+        # 合并源域和目标域特征
+        total_features = torch.cat([source_features, target_features], dim=0)  # [2*batch_size, feature_dim]
+        
+        # 计算两两欧式距离：利用广播机制，计算 L2 距离矩阵
+        total0 = total_features.unsqueeze(0).expand(total_features.size(0), total_features.size(0), total_features.size(1))
+        total1 = total_features.unsqueeze(1).expand(total_features.size(0), total_features.size(0), total_features.size(1))
+        L2_distance = ((total0 - total1) ** 2).sum(2)
+        
+        # 带宽设置：这里取中值，可以防止带宽太小或者太大
+        bandwidth = torch.median(L2_distance.detach())
+        if bandwidth.item() == 0:
+            bandwidth = torch.tensor(1.0).to(source_features.device)
+        # 生成一组带宽参数
+        bandwidth_list = [bandwidth * (kernel_mul**(i - kernel_num//2)) for i in range(kernel_num)]
+        
+        # 对每个带宽计算 RBF 核，并求均值
+        kernels = [torch.exp(-L2_distance / (bw + 1e-8)) for bw in bandwidth_list]
+        kernel_matrix = sum(kernels)  # [2*batch_size, 2*batch_size]
+        
+        # 划分核矩阵
+        XX = kernel_matrix[:batch_size, :batch_size]
+        YY = kernel_matrix[batch_size:, batch_size:]
+        XY = kernel_matrix[:batch_size, batch_size:]
+        YX = kernel_matrix[batch_size:, :batch_size]
+        
+        # 计算 MMD：源域内部、目标域内部和跨域部分
+        mmd_loss = XX.mean() + YY.mean() - XY.mean() - YX.mean()
+        return mmd_loss
+    
+    def dataset_target (self):
+
+        args = self.args
+        # 初始化用于计算MMD的样本
+        self.Fine_datasets = []  
+    
+        # 创建集合，用于存储不同组合的(pos, cls)标签
+        unique_combinations = set()
+
+        
+        # lambda_mmd = 0.1 # MMD 损失权重
+
+
+        # 遍历目标数据集，找到每个不同的(pos, cls)组合
+        target_dataset = self.datasets['target_val']
+        for sample in target_dataset:
+            features, pos, cls = sample
+            unique_combinations.add((pos, cls))
+
+        # 设置每个(pos, cls)组合的微调样本数量
+        Fine_number = args.Fine_number
+
+        # 临时变量，用于记录已选中的样本
+        selected_samples_set = set()  # 使用集合以便快速检查已选样本
+
+        # 遍历所有 (pos, cls) 组合并选择样本
+        for pos, cls in unique_combinations:
+            # 收集所有匹配当前 (pos, cls) 组合的样本
+            matching_samples = [sample for sample in target_dataset if sample[1] == pos and sample[2] == cls]               
+            # 随机选择指定数量的样本
+            selected_samples = random.sample(matching_samples, min(Fine_number, len(matching_samples)))                
+            # 将选择的样本添加到 Fine_datasets 中
+            self.Fine_datasets.extend(selected_samples) 
+            # 记录选中的样本
+            selected_samples_set.update([tuple(sample[0].flatten()) for sample in selected_samples])  # .flatten() 确保数据是1D
+
+        # # 将未被选中的样本添加到测试集
+        # self.Test_datasets = [sample for sample in target_dataset if tuple(sample[0].flatten()) not in selected_samples_set]
+
+        from torch.utils.data import RandomSampler
+        sampler_few = RandomSampler(self.Fine_datasets, replacement=True, num_samples=32)
+        #sampler_test = RandomSampler(self.Fine_datasets, replacement=True, num_samples=32)
+        self.few_shot_loader = torch.utils.data.DataLoader(self.Fine_datasets, batch_size=32, sampler=sampler_few)
+        #test_loader = torch.utils.data.DataLoader(self.Test_datasets, batch_size=32, drop_last=True)
     
 
 
@@ -229,16 +310,17 @@ class train_utils(object):
         :return:
         """
         args = self.args
-
         step = 0
         batch_count = 0
         batch_acc_pos = 0
         best_acc_pos = 0.0
         step_start = time.time()
 
-        # 1. 记忆池（保存高准确率数据）
-        memory_buffer = {"x": [], "y": []}  
-        
+        # # 1. 记忆池（保存高准确率数据）
+        # memory_buffer = {"x": [], "y": []}  
+
+        #self.dataset_target(self) 
+        target_loader_iter = cycle(self.few_shot_loader) 
 
 
         for epoch in range(self.start_epoch, args.max_epoch):
@@ -310,10 +392,11 @@ class train_utils(object):
                         self.model_eval.eval()
                     else:
                         self.model.eval()
-
-                for batch_idx, (inputs, label_pos,_) in enumerate(self.dataloaders[phase]):
+                
+                for batch_idx, (inputs, label_pos, _) in enumerate(self.dataloaders[phase]):
                     # print(inputs.shape)
                     # inputs = self.set_input(inputs)    
+                    # print(f"source_view type after model: {type(self.set_input(inputs))}")
                     label_pos = label_pos.to(self.device)
                     # Do the learning process, in val, we do not care about the gradient for relaxing
                     with torch.set_grad_enabled(phase == 'source_train'):
@@ -325,13 +408,29 @@ class train_utils(object):
                                 pos,_ = self.model_eval(inputs.to(self.device))
                         else: 
                             if  phase != 'target_val':
-                                pos,_ = self.model(self.set_input(inputs).to(self.device)) # phase = 'source_train'
+                                pos,source_view = self.model(self.set_input(inputs).to(self.device)) # phase = 'source_train'
+
+                                #print(f"source_view type after model: {type(source_view)}")
+                                
+
+                                # mmd,target_source
+                                taeget_inputs, _, _ = next(target_loader_iter)
+                                _,target_view = self.model(taeget_inputs.to(self.device)) 
+                                
+                                
                             else:
                                 pos,_ = self.model(inputs.to(self.device)) # phase = 'target_val'
 
                        
-                        label_pos = label_pos.to(self.device)                  
-                        loss_pos = self.criterion(pos , label_pos) 
+                        label_pos = label_pos.to(self.device) 
+                        #print(f"source_view type after model: {type(source_view)}")
+                        mmd_loss = self.compute_mmd_loss(source_view, target_view)
+
+                        # **合并损失**
+                        # 分类损失+ mmd损失
+                        lambda_mmd = 0.1                        
+                        loss_pos = self.criterion(pos , label_pos) + lambda_mmd * mmd_loss 
+
                         loss = loss_pos 
                         pred_pos = pos.argmax(dim=1)
                         correct_pos = torch.eq(pred_pos, label_pos).float().sum().item()

@@ -45,6 +45,8 @@ def parse_args():
     # training parameters
     parser.add_argument('--max_epoch', type=int, default=200, help='max number of epoch')
     parser.add_argument('--print_step', type=int, default=600, help='the interval of log training information') # 待定参数
+    
+    parser.add_argument('--Fine_number', type=int, default=1, help='to computing MMD use one-shot for every classes in taget domain ')
 
     parser.add_argument('--cuda_device', type=str, default='0', help='assign device')
     parser.add_argument('--checkpoint_dir', type=str, default='.\checkpoint_adabn', help='the directory to save the model')
@@ -91,6 +93,7 @@ if __name__ == '__main__':
 
     trainer = train_utils(args, save_dir)
     trainer.setup()
+    trainer.dataset_target()
     trainer.train()
 
 

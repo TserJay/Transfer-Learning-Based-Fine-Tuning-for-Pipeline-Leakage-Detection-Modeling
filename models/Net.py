@@ -518,6 +518,7 @@ class Net(nn.Module):
         x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
         view = self.projetion_pos_1(x_1)  #孔径位置信息
         pos = self.fc1(view)
+       
 	
 
         return pos,view
