@@ -25,7 +25,7 @@ from collections import OrderedDict
 from sklearn.preprocessing import MultiLabelBinarizer
 
 
-import models.LORA_Net_12345 as model_test
+import models.Net as model_test
 from itertools import cycle  # 让 target batch 轮流使用
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"

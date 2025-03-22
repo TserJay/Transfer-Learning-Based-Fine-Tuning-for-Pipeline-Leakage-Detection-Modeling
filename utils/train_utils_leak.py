@@ -15,16 +15,13 @@ import matplotlib.pyplot as plt
 from scipy.signal import resample
 
 from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
-import matplotlib.pyplot as plt
+
 
 import torch.nn.functional as F
 
 import datasets as datasets
-import models.LORA_Net_12345 as models
-#import models.LORA_Net_12345 as model_Ftest
-#import models.wd as model_wd
+import models.Net as models
+
 
 
 import os  
@@ -335,7 +332,7 @@ class train_utils(object):
                        
                         label_pos = label_pos.to(self.device)                  
                         loss_pos = self.criterion(pos , label_pos) 
-                        loss = loss_pos
+                        loss = loss_pos 
                         pred_pos = pos.argmax(dim=1)
                         correct_pos = torch.eq(pred_pos, label_pos).float().sum().item()
                         loss_temp = loss.item() * inputs.size(0)

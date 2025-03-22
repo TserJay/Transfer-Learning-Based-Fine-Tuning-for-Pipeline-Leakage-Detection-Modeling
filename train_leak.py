@@ -25,13 +25,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train')
 
     # model and data parameters
-    parser.add_argument('--model_name', type=str, default='LORA_Net_12345', help='the name of the model')
+    parser.add_argument('--model_name', type=str, default='Net', help='the name of the model')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
     parser.add_argument('--transfer_task', type=list, default=[[0] , [1], [2], [3]], help='transfer learning tasks')
     parser.add_argument('--task', type=str, default='0-123', help='transfer learning tasks')
-    parser.add_argument('--num_layers', type=str, default='2', help='num_layers in model')
-    parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2 ')
+    
+    parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2    senet + co-atten')
     parser.add_argument('--normlizetype', type=str, default='mean-std', help='nomalization type')
     parser.add_argument('--set_input', type=str, default='train=T,target=F', help='nomalization type')
     parser.add_argument('--eval_test_all', type=bool, default=True, help='')
@@ -61,11 +61,11 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='the momentum for sgd')
     parser.add_argument('--weight-decay', type=float, default=1e-5, help='the weight decay')
     parser.add_argument('--lr_scheduler', type=str, choices=['step', 'exp', 'stepLR', 'fix'], default='step', help='the learning rate schedule')
-    parser.add_argument('--gamma', type=float, default=0.66, help='learning rate scheduler parameter for step and exp')
+    parser.add_argument('--gamma', type=float, default=0.66 , help='learning rate scheduler parameter for step and exp')
     parser.add_argument('--steps', type=str, default='100, 150', help='the learning rate decay for step and stepLR')
 
 
-    args = parser.parse_args()
+    args = parser.parse_args() 
     return args
 
 if __name__ == '__main__':
