@@ -428,7 +428,7 @@ class train_utils(object):
 
                         # **合并损失**
                         # 分类损失+ mmd损失
-                        lambda_mmd = 0.1                        
+                        lambda_mmd = 0.01                    
                         loss_pos = self.criterion(pos , label_pos) + lambda_mmd * mmd_loss 
 
                         loss = loss_pos 

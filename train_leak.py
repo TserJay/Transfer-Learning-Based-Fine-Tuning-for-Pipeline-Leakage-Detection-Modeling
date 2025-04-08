@@ -28,10 +28,10 @@ def parse_args():
     parser.add_argument('--model_name', type=str, default='Net', help='the name of the model')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
-    parser.add_argument('--transfer_task', type=list, default=[[0] , [1], [2], [3]], help='transfer learning tasks')
-    parser.add_argument('--task', type=str, default='0-123', help='transfer learning tasks')
+    parser.add_argument('--transfer_task', type=list, default=[[3] , [0], [1], [2]], help='transfer learning tasks')
+    parser.add_argument('--task', type=str, default='3-012', help='transfer learning tasks')
     
-    parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2    senet + co-atten')
+    parser.add_argument('--note', type=str, default='no.1,3,5    数据增强改动 原始:(-100,400),(0.5,1.5)     [1,1,1,1] bs=128,2    senet + co-atten    mmd0.01')
     parser.add_argument('--normlizetype', type=str, default='mean-std', help='nomalization type')
     parser.add_argument('--set_input', type=str, default='train=T,target=F', help='nomalization type')
     parser.add_argument('--eval_test_all', type=bool, default=True, help='')
