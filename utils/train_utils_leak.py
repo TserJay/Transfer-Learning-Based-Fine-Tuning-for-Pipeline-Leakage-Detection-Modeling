@@ -222,6 +222,7 @@ class train_utils(object):
     #   return self.wd(input) 
     def Diffusion(self):
     # 1. 定义条件扩散模型（Conditional Diffusion Model）
+    # 后续将Diffusionmodel写入到model文件中
         class ConditionalDiffusionModel(nn.Module):
             def __init__(self, input_dim, condition_dim):
                 super(ConditionalDiffusionModel, self).__init__()
