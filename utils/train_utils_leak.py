@@ -220,7 +220,80 @@ class train_utils(object):
     #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
       
     #   return self.wd(input) 
-    
+    def Diffusion(self):
+    # 1. 定义条件扩散模型（Conditional Diffusion Model）
+        class ConditionalDiffusionModel(nn.Module):
+            def __init__(self, input_dim, condition_dim):
+                super(ConditionalDiffusionModel, self).__init__()
+                self.input_dim = input_dim
+                self.condition_dim = condition_dim
+                
+                # 定义模型的网络结构
+                self.model = nn.Sequential(
+                    nn.Linear(input_dim + condition_dim, 512),  # 输入信号和条件信息
+                    nn.ReLU(),
+                    nn.Linear(512, 256),
+                    nn.ReLU(),
+                    nn.Linear(256, 128),
+                    nn.ReLU(),
+                    nn.Linear(128, input_dim),
+                )
+            
+            def reverse_process(self, noise, condition, timesteps=1000):
+                # 扩散模型的反向过程（生成数据的过程）
+                input_data = torch.cat([noise, condition], dim=-1)  # 拼接噪声和条件信息
+                for t in range(timesteps):
+                    output = self.model(input_data)
+                    input_data = output  # 更新数据
+                return output
+
+        # 2. 定义MMD损失函数
+        def mmd_loss(source_data, target_data):
+            # 计算源域数据和目标域数据的最大均值差异（MMD）损失
+            source_mean = source_data.mean(dim=0)
+            target_mean = target_data.mean(dim=0)
+            loss = torch.norm(source_mean - target_mean)
+            return loss
+
+        # 3. 生成数据的函数，利用目标域的数据
+        def generate_samples_with_target_data(diffusion_model, target_data, target_labels, num_generated_samples=10, timesteps=1000):
+            generated_samples = []
+            
+            for label in target_labels.unique():
+                # 提取当前类别的目标域样本
+                class_data = target_data[target_labels == label]
+                
+                # 随机选择一个样本作为条件输入
+                condition = class_data[torch.randint(0, len(class_data), (1,))]
+                
+                # 为该类别生成多个样本
+                generated_for_class = []
+                for _ in range(num_generated_samples):
+                    noise = torch.randn_like(condition)  # 生成噪声
+                    generated_sample = diffusion_model.reverse_process(noise, condition, timesteps)
+                    generated_for_class.append(generated_sample)
+                
+                # 合并该类别生成的样本
+                generated_samples.append(torch.cat(generated_for_class, dim=0))
+            
+            # 合并所有类别的生成样本
+            return torch.cat(generated_samples, dim=0)
+
+        # 4. 假设我们有源域数据（source_data）和目标域数据（target_data）及其标签（target_labels）
+        # 示例数据（假设数据维度为 [B, C, T]，B是批量大小，C是通道数，T是时间步）
+        B, C, T = 32, 3, 128
+        source_data = torch.randn(B, C, T)  # 假设源域数据
+        target_data = torch.randn(B, C, T)  # 假设目标域数据
+        target_labels = torch.randint(0, 11, (B,))  # 目标域数据的标签，假设有11类
+
+        # 5. 初始化并训练扩散模型
+        diffusion_model = ConditionalDiffusionModel(input_dim=C*T, condition_dim=C*T)
+
+        # 6. 合并生成数据与原始数据
+        def combine_generated_and_original_data(generated_samples, original_data):
+            # 拼接生成数据和原始数据
+            combined_data = torch.cat([generated_samples, original_data], dim=0)
+            return combined_data
 
 
     def train(self):
