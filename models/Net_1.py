@@ -313,14 +313,6 @@ class Res2Net(nn.Module):
         self.fused_conv_bn_relu2 = FusedConvBNReLU(self.conv2, self.bn2)
 
 
-        
-        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        # self.shrinkage = Shrinkage(out_channels, gap_size=(1), reduction=reduction)
-        # self.bn = nn.Sequential(      
-        #     nn.BatchNorm1d(256 * block.expansion),
-        #     nn.ReLU(inplace=True),
-        #     self.shrinkage #特征缩减  
-        # )
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.BiLSTM1 = LayerNormLSTM(897,448)
 
@@ -431,7 +423,7 @@ class Res2Net(nn.Module):
         return x,y
 
 
-class Net(nn.Module): 
+class Net_1(nn.Module): 
     def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
         # def __init__(self, in_channel=3, kernel_size=3, in_embd=128, d_model=512, in_head=8, num_block=1, dropout=0.3, d_ff=128, out_c=1):
         ##################  改动！！！
@@ -444,7 +436,7 @@ class Net(nn.Module):
         :param d_ff: feedforward of transformer
         :param out_c: class_num
         '''
-        super(Net, self).__init__()
+        super(Net_1, self).__init__()
         
 
         self.backbone = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
@@ -452,36 +444,6 @@ class Net(nn.Module):
         
         
 
-        # self.backbone1 = nn.Sequential(
-        #     nn.Conv1d(3, 32, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(32),
-        #     nn.ReLU(inplace=True),
-
-        #     nn.Conv1d(32, 64, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-
-            
-        #     # DeformConv2d(32, 64, 3 , padding=1, modulation=True)
-
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv1d(64, 32, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(32),
-        #     nn.ReLU(inplace=True),
-        # )
-
-        # self.enc_embedding_en = DataEmbedding(in_embd, d_model, dropout=dropout)
-        # DataEmbedding数据嵌入模块，对输入的数据进行嵌入处理
-        
 
         layers = []
         # for _ in range(num_block):
@@ -511,9 +473,9 @@ class Net(nn.Module):
 
     def forward(self, x ):
 
-        # x = self.backbone1(x)
+   
         x,y = self.backbone(x,'adapter1')  #[32, 128, 113]  源域分支
-           
+    
         x = x+y   # 绕过4层DPN网络
         x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
         view = self.projetion_pos_1(x_1)  #孔径位置信息
@@ -527,10 +489,9 @@ if __name__ == '__main__':
 
     parameter1 = 32
     x = torch.randn(parameter1, 2, 1792).to(0)
-    
 
     model = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth =32, scale = 2).to(0)  # [3,4,23,3]
-    print(model)
+
     # model = model(in_channel=3, kernel_size=3, in_embd=64, d_model=112, in_head=2, num_block=1, d_ff=64, dropout=0.2, out_c=4).to(0)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('Model total parameter: %.2fMb\n' % (model_params/1024/2024))
