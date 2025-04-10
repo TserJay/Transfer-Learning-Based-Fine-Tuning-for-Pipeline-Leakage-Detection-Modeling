@@ -116,16 +116,9 @@ class train_utils(object):
         
         # Define the model
         self.model = getattr(models,args.model_name)(args.pretrained)
-#        self.model_Ftest = getattr(model_Ftest, args.model_Fine_name)(args.pretrained)
-
-
-        
+#      
         self.model_test = getattr(models, args.model_name)(args.pretrained)
-
         
-        
-        # self.model.fc = torch.nn.Linear(self.model.fc.in_features, Dataset.num_classes)
-    
         if args.adabn:
             self.model_eval = getattr(models, args.model_name)(args.pretrained)
         
@@ -163,7 +156,6 @@ class train_utils(object):
 
         self.start_epoch = 0
 
-
         # Invert the model and define the loss
         self.model.to(self.device)
         if args.adabn:
@@ -185,35 +177,9 @@ class train_utils(object):
             # 随机生成一个偏移量shift
             scale = np.random.uniform(0.5, 1.5)
             # 随机生成一个缩放因子scale
-            
             data_ = np.roll( data , shift ) * scale
-            
-            # transformed_signal1 = np.roll(data[:, 0], shift) * scale
-            # transformed_signal2 = np.roll(data[:, 1], shift) * scale
-            # transformed_signal3 = np.roll(data[:, 2], shift) * scale
-            # # 分别对data数据集的第一、第二、第三列进行处理
-                   
-            # data_ = np.concatenate([transformed_signal1.reshape(-1, 1), transformed_signal2.reshape(-1, 1),
-            #                         transformed_signal3.reshape(-1, 1)], axis=1)
-            # data_ = np.concatenate([transformed_signal1.reshape(-1, 1), transformed_signal2.reshape(-1, 1),
-            #                         transformed_signal3.reshape(-1, 1)], axis=1)
-            # data_ = np.concatenate([transformed_signal1.reshape(-1, 1),
-            #                         transformed_signal2.reshape(-1, 1)], axis=1)
-            # 变为多行一列的形式，沿x轴作为一组
-
             data_set.append(data_)
-            self.input_signals = torch.tensor(data_set)
-            
-        # self.input_signals = torch.from_numpy(np.transpose(np.array(data_set), (0, 2, 1))).float()#.to(self.device)
-        # np.transpose改变数组的维度位置;(0,1,2)->(0,2,1)
-
-        # self.pos = (torch.tensor(labels).float() / self.args.dot_num).reshape(-1, 1)
-
-
-        # self.cla = torch.from_numpy(self.mlb.fit_transform(labels)).float()#.to(self.args.device) #类别任务
-        # 使用 mlb.fit_transform 方法将目标数据中的第二列进行 one-hot 编码,并转换格式
-        ############################################################################################################################
-
+            self.input_signals = torch.tensor(data_set)     
         return self.input_signals
     
     # def wd(self,input):
@@ -221,7 +187,45 @@ class train_utils(object):
     #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
       
     #   return self.wd(input) 
-    
+from torch.utils.data import DataLoader, TensorDataset
+class DiffUNetTrainer:
+    def __init__(self, model, target_data, device='cuda', lr=1e-3, batch_size=32, epochs=100):
+        self.model = model.to(device)
+        self.device = device
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.criterion = nn.MSELoss()  # 如果是 DDPM 风格，后面可以换成噪声预测的损失
+
+        # 创建 DataLoader
+        self.dataset = TensorDataset(target_data, target_data)  # 使用目标域数据进行训练
+        self.dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=True)
+
+    def train(self):
+        self.model.train()
+        for epoch in range(self.epochs):
+            total_loss = 0
+            for x, y in self.dataloader:
+                x, y = x.to(self.device), y.to(self.device)
+                noise = torch.randn_like(x)
+                noised_input = x + noise * 0.1  # 模拟扩散初始噪声
+
+                # 使用 noised_input 作为输入进行训练
+                output = self.model(noised_input, x)  # 条件是原始信号
+                loss = self.criterion(output, x)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                total_loss += loss.item()
+
+            print(f"[Epoch {epoch+1}/{self.epochs}] Loss: {total_loss/len(self.dataloader):.6f}")
+
+    def save_model(self, path='diff_unet_pretrained.pth'):
+        torch.save(self.model.state_dict(), path)
+
+    def load_model(self, path='diff_unet_pretrained.pth'):
+        self.model.load_state_dict(torch.load(path))
    
 
     # ===== MMD Loss Function =====
@@ -276,6 +280,15 @@ class train_utils(object):
     target_labels = torch.randint(0, 11, (B,))
     # 初始化 UNet 模型
     model = Diff_UNet(in_channels=C, condition_channels=C)
+   
+    # 训练模型（使用目标域数据进行训练）
+    trainer = Diff_UNet(model, target_data, device='cuda', lr=1e-3, batch_size=32, epochs=100)
+    trainer.train()  # 开始训练
+
+    # 保存模型
+    trainer.save_model('diff_unet_pretrained.pth') # 权重文件
+    # 训练结束后，加载模型（用于生成）
+    trainer.load_model('diff_unet_pretrained.pth')
 
     # 生成样本（比如每类生成10个）
     generated_samples = generate_and_filter_samples(model, target_data, target_labels, num_generated_per_class=10)
