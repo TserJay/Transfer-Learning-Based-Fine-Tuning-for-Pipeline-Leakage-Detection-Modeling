@@ -239,21 +239,30 @@ class train_utils(object):
         return x
 
     # ===== 生成函数：从目标域抽样条件，扩散生成样本 =====
-    def generate_samples_with_target_data(self, model, target_data, target_labels, num_generated_per_class=10, timesteps=50):
+    def generate_and_filter_samples(self, model, target_data, target_labels, mmd_threshold=0.3, num_generated_per_class=10, timesteps=50):
+        model.eval()
         generated_samples = []
         generated_labels = []
+
         for label in target_labels.unique():
             class_data = target_data[target_labels == label]
             if class_data.size(0) < 1:
                 continue
-            condition = class_data[torch.randint(0, len(class_data), (1,))]
-            generated_for_class = []
+
             for _ in range(num_generated_per_class):
+                condition = class_data[torch.randint(0, len(class_data), (1,))]
                 generated = self.reverse_process(model, condition, timesteps)
-                generated_for_class.append(generated)
-                generated_labels.append(label)  # 注意记录 label
-            generated_samples.append(torch.cat(generated_for_class, dim=0))
-        return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(self.device)
+                
+                # ===== MMD 打分 =====
+                mmd = self.mmd_loss(generated, class_data)
+                if mmd.item() < mmd_threshold:
+                    generated_samples.append(generated)
+                    generated_labels.append(label)
+
+        if len(generated_samples) == 0:
+            return None, None
+
+        return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(target_data.device)
 
 
     # ===== 数据拼接函数 =====
@@ -269,7 +278,7 @@ class train_utils(object):
     model = Diff_UNet(in_channels=C, condition_channels=C)
 
     # 生成样本（比如每类生成10个）
-    generated_samples = generate_samples_with_target_data(model, target_data, target_labels, num_generated_per_class=10)
+    generated_samples = generate_and_filter_samples(model, target_data, target_labels, num_generated_per_class=10)
 
     # 合并数据，用于后续训练分类器
     augmented_data = combine_generated_and_original(generated_samples, source_data)
