@@ -6,19 +6,20 @@ import os
 import time
 import warnings
 import random
-
 import torch
-from torch import nn
-from torch import optim
+import torch.nn as nn
+from torch import optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import resample
+from torch.utils.data import DataLoader, TensorDataset
+from collections import OrderedDict
 
+
+from scipy.signal import resample
 from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
 
 
 import torch.nn.functional as F
-
 import datasets as datasets
 import models.Net as models
 import models.Diff_UNet as Diff_UNet
@@ -27,8 +28,6 @@ import models.Diff_UNet as Diff_UNet
 
 import os  
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-
-from collections import OrderedDict
 
 
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -46,7 +45,6 @@ from sklearn.preprocessing import MultiLabelBinarizer
 
 # # 使用特定的随机种子
 # set_seed(99)
-
 
 
 def apply_dropout(m):
@@ -187,114 +185,224 @@ class train_utils(object):
     #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
       
     #   return self.wd(input) 
-from torch.utils.data import DataLoader, TensorDataset
-class DiffUNetTrainer:
-    def __init__(self, model, target_data, device='cuda', lr=1e-3, batch_size=32, epochs=100):
-        self.model = model.to(device)
-        self.device = device
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.criterion = nn.MSELoss()  # 如果是 DDPM 风格，后面可以换成噪声预测的损失
+    
+# class TrainUtils(object):
+#     def __init__(self, args, save_dir):
+#         self.args = args
+#         self.save_dir = save_dir
+#         self.train_dict = OrderedDict()
+#         self.train_dict['source_train-Loss'] = []
+#         self.train_dict['source_train-Acc_pos'] = []
+  
+#         self.train_dict['source_val-Loss'] = []
+#         self.train_dict['source_val-Acc_pos'] = []
+        
+#         self.train_dict['target_val-Loss'] = []
+#         self.train_dict['target_val-Acc_pos'] = []   
 
-        # 创建 DataLoader
-        self.dataset = TensorDataset(target_data, target_data)  # 使用目标域数据进行训练
-        self.dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=True)
+#         self.Fine_dict = OrderedDict() 
+#         self.Fine_dict['Fine_Acc'] = []  
 
-    def train(self):
-        self.model.train()
-        for epoch in range(self.epochs):
+#     def setup(self):
+#         """
+#         Initialize the datasets, model, loss and optimizer
+#         """
+#         args = self.args
+
+#         # Consider the gpu or cpu condition
+#         if torch.cuda.is_available():
+#             self.device = torch.device("cuda")
+#             self.device_count = torch.cuda.device_count()
+#             logging.info('using {} gpus'.format(self.device_count))
+#             assert args.batch_size % self.device_count == 0, "batch size should be divided by device count"
+#         else:
+#             warnings.warn("gpu is not available")
+#             self.device = torch.device("cpu")
+#             self.device_count = 1
+#             logging.info('using {} cpu'.format(self.device_count))
+
+#         # Load the datasets
+#         Dataset = getattr(datasets, args.data_name)
+#         self.datasets = {}
+
+#         if isinstance(args.transfer_task[0], str):
+#             args.transfer_task = eval("".join(args.transfer_task))
+
+#         self.datasets['source_train'], self.datasets['source_val'], self.datasets['target_val'] = Dataset(
+#             args.data_dir, args.transfer_task, args.normlizetype, args.source_num_classes).data_split(transfer_learning=False)
+
+#         self.dataloaders = {
+#             x: torch.utils.data.DataLoader(self.datasets[x], batch_size=args.batch_size, drop_last=True,
+#                                            shuffle=(True if x.split('_')[1] == 'train' else False),
+#                                            num_workers=args.num_workers,
+#                                            pin_memory=(True if self.device == 'cuda' else False))
+#             for x in ['source_train', 'source_val', 'target_val']
+#         }
+
+#         # Initialize models
+#         self.model = getattr(models, args.model_name)(args.pretrained).to(self.device)  # DiffUNet
+#         self.model_test = getattr(models, args.model_name)(args.pretrained).to(self.device)  # 分类器
+
+#         # Define the optimizer for classifier training (DiffUNet单独内部用局部optimizer)
+#         self.optimizer = optim.Adam(self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+#         # Define learning rate scheduler
+#         if args.lr_scheduler == 'step':
+#             steps = [int(step) for step in args.steps.split(',')]
+#             self.lr_scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, steps, gamma=args.gamma)
+#         elif args.lr_scheduler == 'exp':
+#             self.lr_scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, args.gamma)
+#         else:
+#             self.lr_scheduler = None
+
+#         self.criterion = nn.CrossEntropyLoss()
+
+    def set_input(self, input):
+        """
+        Handle data transformations (shift, scale, etc.) and return the input signals
+        """
+        data_set = []
+        for data in input:
+            shift = np.random.randint(-100, 400)
+            scale = np.random.uniform(0.5, 1.5)
+            data_ = np.roll(data, shift) * scale
+            data_set.append(data_)
+
+        self.input_signals = torch.tensor(data_set)
+        return self.input_signals
+
+    def train_diff_unet(self, model, source_data, batch_size=32, epochs=100):
+        """
+        使用源域数据训练 DiffUNet 模型（用于扩散生成）
+        采用 MSELoss 作为重构损失（类似AE或DDPM风格）
+        """
+        model.train()
+        # 注意：这里构造的 DataLoader 的 dataset 应该是一个 TensorDataset，要求数据形状符合模型输入
+        dataloader = DataLoader(source_data, batch_size=batch_size, shuffle=True)
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.MSELoss()
+
+        for epoch in range(epochs):
             total_loss = 0
-            for x, y in self.dataloader:
+            for x, y in dataloader:
                 x, y = x.to(self.device), y.to(self.device)
                 noise = torch.randn_like(x)
                 noised_input = x + noise * 0.1  # 模拟扩散初始噪声
 
-                # 使用 noised_input 作为输入进行训练
-                output = self.model(noised_input, x)  # 条件是原始信号
-                loss = self.criterion(output, x)
+                output = model(noised_input, x)  # 条件：原始信号 x
+                loss = criterion(output, x)
 
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
-                self.optimizer.step()
+                optimizer.step()
                 total_loss += loss.item()
 
-            print(f"[Epoch {epoch+1}/{self.epochs}] Loss: {total_loss/len(self.dataloader):.6f}")
+            print(f"[DiffUNet Epoch {epoch+1}/{epochs}] Loss: {total_loss/len(dataloader):.6f}")
 
-    def save_model(self, path='diff_unet_pretrained.pth'):
-        torch.save(self.model.state_dict(), path)
-
-    def load_model(self, path='diff_unet_pretrained.pth'):
-        self.model.load_state_dict(torch.load(path))
-   
-
-    # ===== MMD Loss Function =====
     def mmd_loss(self, source, target):
+        """
+        Calculate the MMD loss between source and target distributions
+        """
         source_mean = source.mean(dim=0)
         target_mean = target.mean(dim=0)
         return torch.norm(source_mean - target_mean)
 
-    # ===== Diffusion反向过程（简化版） =====
+    def generate_samples(self, model, target_data, num_generated=10, timesteps=50):
+        """
+        使用 DiffUNet 生成样本，并利用目标域少量数据进行 MMD 筛选
+        注意：target_data 作为计算 MMD 的参考，通常应为少量目标域数据
+        """
+        model.eval()
+        generated_samples = []
+        generated_labels = []
+
+        # 假设 target_data 数据格式中，标签可以从 tensor 中取出唯一值（这里简单演示）
+        # 若 target_data 中不包含标签，需要另外提供目标域标签 tensor
+        for label in target_data.unique():
+            # 筛选出目标域中属于该 label 的样本
+            class_data = target_data[target_data == label]
+            if len(class_data) == 0:
+                continue
+            for _ in range(num_generated):
+                # 随机从该类别中抽取一个作为条件
+                condition = class_data[torch.randint(0, len(class_data), (1,))]
+                generated = self.reverse_process(model, condition, timesteps)
+
+                # 利用 MMD 筛选生成样本，越接近参考数据表示质量越好
+                mmd = self.mmd_loss(generated, class_data)
+                if mmd.item() < 0.3:  # MMD 阈值，可调
+                    generated_samples.append(generated)
+                    generated_labels.append(label)
+
+        if len(generated_samples) == 0:
+            return None, None
+        return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(self.device)
+
     def reverse_process(self, model, condition, timesteps=50):
+        """
+        Diffusion 模型的反向过程（简化版）——从噪声逐步恢复信号
+        """
         noise = torch.randn_like(condition)
         x = noise
         for _ in range(timesteps):
             x = model(x, condition)
         return x
 
-    # ===== 生成函数：从目标域抽样条件，扩散生成样本 =====
-    def generate_and_filter_samples(self, model, target_data, target_labels, mmd_threshold=0.3, num_generated_per_class=10, timesteps=50):
-        model.eval()
-        generated_samples = []
-        generated_labels = []
+    def train_classifier(self, classifier, augmented_data, augmented_labels, batch_size=32, epochs=10):
+        """
+        使用增强数据训练分类器
+        """
+        classifier.train()
+        dataloader = DataLoader(TensorDataset(augmented_data, augmented_labels), batch_size=batch_size, shuffle=True)
+        optimizer = optim.Adam(classifier.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
 
-        for label in target_labels.unique():
-            class_data = target_data[target_labels == label]
-            if class_data.size(0) < 1:
-                continue
+        for epoch in range(epochs):
+            total_loss = 0
+            for x_batch, y_batch in dataloader:
+                x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+                optimizer.zero_grad()
+                outputs = classifier(x_batch)
+                loss = criterion(outputs, y_batch)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
 
-            for _ in range(num_generated_per_class):
-                condition = class_data[torch.randint(0, len(class_data), (1,))]
-                generated = self.reverse_process(model, condition, timesteps)
-                
-                # ===== MMD 打分 =====
-                mmd = self.mmd_loss(generated, class_data)
-                if mmd.item() < mmd_threshold:
-                    generated_samples.append(generated)
-                    generated_labels.append(label)
+            print(f"[Classifier Epoch {epoch+1}/{epochs}] Loss: {total_loss/len(dataloader):.6f}")
 
-        if len(generated_samples) == 0:
-            return None, None
+    def train(self):
+        """
+        整个训练流程：
+          1. 使用源域所有数据训练 DiffUNet（扩散生成器）
+          2. 利用少量目标域数据计算 MMD 筛选生成的样本
+          3. 将生成的样本与源域数据合并用于分类器训练
+        """
+        # 1. 使用源域数据训练 DiffUNet（预训练扩散生成器）
+        # 注意：这里 self.datasets['source_train'] 应该是构造成 TensorDataset 格式的数据，
+        # 若 self.datasets['source_train'] 不是 TensorDataset，请先做相应处理
+        self.train_diff_unet(self.model, self.datasets['source_train'])
 
-        return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(target_data.device)
+        # 2. 利用目标域少量数据生成样本（这里 self.datasets['target_val'] 可认为是少量数据）
+        augmented_data, augmented_labels = self.generate_samples(self.model, self.datasets['target_val'])
 
+        if augmented_data is None:
+            print("未生成任何高质量的样本，请调整 MMD 阈值或检查目标域数据！")
+            return
 
-    # ===== 数据拼接函数 =====
-    def combine_generated_and_original(generated, original):
-        return torch.cat([generated, original], dim=0)
-    
-    # 假设你已有数据如下：
-    B, C, T = 32, 3, 1792  # 批量，通道，时间步
-    source_data = torch.randn(B, C, T)
-    target_data = torch.randn(B, C, T)
-    target_labels = torch.randint(0, 11, (B,))
-    # 初始化 UNet 模型
-    model = Diff_UNet(in_channels=C, condition_channels=C)
-   
-    # 训练模型（使用目标域数据进行训练）
-    trainer = Diff_UNet(model, target_data, device='cuda', lr=1e-3, batch_size=32, epochs=100)
-    trainer.train()  # 开始训练
+        # 3. 将生成的样本与源域数据合并
+        # 注意：确保合并的数据格式一致
+        combined_data = torch.cat([augmented_data, self.datasets['source_train']], dim=0)
+        # 对于分类标签，这里生成器只返回了 augmented_labels，
+        # 你需要将源域样本的标签也合并进来，此处假设 self.datasets['source_train'] 的标签存储在 dataset.targets
+        # 若没有，需根据你实际情况修改标签的合并方式
+        if hasattr(self.datasets['source_train'], 'targets'):
+            combined_labels = torch.cat([augmented_labels, self.datasets['source_train'].targets], dim=0)
+        else:
+            # 如果没有标签，后续分类训练可能无法进行，请保证数据集提供标签
+            combined_labels = augmented_labels
 
-    # 保存模型
-    trainer.save_model('diff_unet_pretrained.pth') # 权重文件
-    # 训练结束后，加载模型（用于生成）
-    trainer.load_model('diff_unet_pretrained.pth')
-
-    # 生成样本（比如每类生成10个）
-    generated_samples = generate_and_filter_samples(model, target_data, target_labels, num_generated_per_class=10)
-
-    # 合并数据，用于后续训练分类器
-    augmented_data = combine_generated_and_original(generated_samples, source_data)
+        # 4. 训练分类器（使用 self.model_test 作为分类器）
+        self.train_classifier(self.model_test, combined_data, combined_labels)
 
 
     def train(self):
