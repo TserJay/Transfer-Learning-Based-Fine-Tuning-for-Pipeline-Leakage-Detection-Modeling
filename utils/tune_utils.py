@@ -288,7 +288,7 @@ class tune_utils(object):
 
             from torch.utils.data import RandomSampler
             sampler_few = RandomSampler(self.Fine_datasets, replacement=True, num_samples=32)
-            sampler_test = RandomSampler(self.Fine_datasets, replacement=True, num_samples=32)
+            # sampler_test = RandomSampler(self.Fine_datasets, replacement=True, num_samples=32)
             few_shot_loader = torch.utils.data.DataLoader(self.Fine_datasets, batch_size=32, sampler=sampler_few)
             test_loader = torch.utils.data.DataLoader(self.Test_datasets, batch_size=32, drop_last=True)
 

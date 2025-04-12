@@ -164,11 +164,6 @@ class train_utils(object):
     
 
     def set_input(self, input):
-        """input: a dictionary that contains the data itself and its metadata information.
-        example:
-            input_signals.size() = B, C, 1, S
-
-        """
         data_set = []
         for data in input:
             shift = np.random.randint(-100, 400)
@@ -177,8 +172,8 @@ class train_utils(object):
             # 随机生成一个缩放因子scale
             data_ = np.roll( data , shift ) * scale
             data_set.append(data_)
-            self.input_signals = torch.tensor(data_set)     
-        return self.input_signals
+            self.out_signals = torch.tensor(data_set)     
+        return self.out_signals
     
     # def wd(self,input):
 
@@ -186,90 +181,6 @@ class train_utils(object):
       
     #   return self.wd(input) 
     
-# class TrainUtils(object):
-#     def __init__(self, args, save_dir):
-#         self.args = args
-#         self.save_dir = save_dir
-#         self.train_dict = OrderedDict()
-#         self.train_dict['source_train-Loss'] = []
-#         self.train_dict['source_train-Acc_pos'] = []
-  
-#         self.train_dict['source_val-Loss'] = []
-#         self.train_dict['source_val-Acc_pos'] = []
-        
-#         self.train_dict['target_val-Loss'] = []
-#         self.train_dict['target_val-Acc_pos'] = []   
-
-#         self.Fine_dict = OrderedDict() 
-#         self.Fine_dict['Fine_Acc'] = []  
-
-#     def setup(self):
-#         """
-#         Initialize the datasets, model, loss and optimizer
-#         """
-#         args = self.args
-
-#         # Consider the gpu or cpu condition
-#         if torch.cuda.is_available():
-#             self.device = torch.device("cuda")
-#             self.device_count = torch.cuda.device_count()
-#             logging.info('using {} gpus'.format(self.device_count))
-#             assert args.batch_size % self.device_count == 0, "batch size should be divided by device count"
-#         else:
-#             warnings.warn("gpu is not available")
-#             self.device = torch.device("cpu")
-#             self.device_count = 1
-#             logging.info('using {} cpu'.format(self.device_count))
-
-#         # Load the datasets
-#         Dataset = getattr(datasets, args.data_name)
-#         self.datasets = {}
-
-#         if isinstance(args.transfer_task[0], str):
-#             args.transfer_task = eval("".join(args.transfer_task))
-
-#         self.datasets['source_train'], self.datasets['source_val'], self.datasets['target_val'] = Dataset(
-#             args.data_dir, args.transfer_task, args.normlizetype, args.source_num_classes).data_split(transfer_learning=False)
-
-#         self.dataloaders = {
-#             x: torch.utils.data.DataLoader(self.datasets[x], batch_size=args.batch_size, drop_last=True,
-#                                            shuffle=(True if x.split('_')[1] == 'train' else False),
-#                                            num_workers=args.num_workers,
-#                                            pin_memory=(True if self.device == 'cuda' else False))
-#             for x in ['source_train', 'source_val', 'target_val']
-#         }
-
-#         # Initialize models
-#         self.model = getattr(models, args.model_name)(args.pretrained).to(self.device)  # DiffUNet
-#         self.model_test = getattr(models, args.model_name)(args.pretrained).to(self.device)  # 分类器
-
-#         # Define the optimizer for classifier training (DiffUNet单独内部用局部optimizer)
-#         self.optimizer = optim.Adam(self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-#         # Define learning rate scheduler
-#         if args.lr_scheduler == 'step':
-#             steps = [int(step) for step in args.steps.split(',')]
-#             self.lr_scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, steps, gamma=args.gamma)
-#         elif args.lr_scheduler == 'exp':
-#             self.lr_scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, args.gamma)
-#         else:
-#             self.lr_scheduler = None
-
-#         self.criterion = nn.CrossEntropyLoss()
-
-    def set_input(self, input):
-        """
-        Handle data transformations (shift, scale, etc.) and return the input signals
-        """
-        data_set = []
-        for data in input:
-            shift = np.random.randint(-100, 400)
-            scale = np.random.uniform(0.5, 1.5)
-            data_ = np.roll(data, shift) * scale
-            data_set.append(data_)
-
-        self.input_signals = torch.tensor(data_set)
-        return self.input_signals
 
     def train_diff_unet(self, model, source_data, batch_size=32, epochs=100):
         """
@@ -311,6 +222,11 @@ class train_utils(object):
         """
         使用 DiffUNet 生成样本，并利用目标域少量数据进行 MMD 筛选
         注意：target_data 作为计算 MMD 的参考，通常应为少量目标域数据
+        
+        目标域存在3个大类,每个大类有11个小类别
+        从33个类别中抽取一个样本作为目标样本,用来控制生成的数据质量
+
+
         """
         model.eval()
         generated_samples = []
