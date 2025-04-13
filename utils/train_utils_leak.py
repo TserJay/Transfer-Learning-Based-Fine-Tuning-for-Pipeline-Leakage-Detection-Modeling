@@ -113,13 +113,13 @@ class train_utils(object):
                             for x in ['source_train', 'source_val', 'target_val']}
         
         # Define the model
-        self.model = getattr(models,args.model_name)(args.pretrained)
-#      
+        self.model = getattr(models,args.model_name)(args.pretrained)     
         self.model_test = getattr(models, args.model_name)(args.pretrained)
         
+        # 是否使用adabn
         if args.adabn:
             self.model_eval = getattr(models, args.model_name)(args.pretrained)
-        
+    
         if self.device_count > 1:
             self.model = torch.nn.DataParallel(self.model)
             if args.adabn:
@@ -159,6 +159,7 @@ class train_utils(object):
         if args.adabn:
             self.model_eval.to(self.device)
 
+        # Define loss 
         self.criterion = nn.CrossEntropyLoss()
         # self.criterion = nn.SoftmaxCrossEntropyLoss()
     
@@ -218,6 +219,8 @@ class train_utils(object):
         target_mean = target.mean(dim=0)
         return torch.norm(source_mean - target_mean)
 
+
+
     def generate_samples(self, model, target_data, num_generated=10, timesteps=50):
         """
         使用 DiffUNet 生成样本，并利用目标域少量数据进行 MMD 筛选
@@ -253,6 +256,63 @@ class train_utils(object):
         if len(generated_samples) == 0:
             return None, None
         return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(self.device)
+    
+
+    def generate_samples(self, model, target_data, num_generated=10, timesteps=50):
+        """
+        使用 DiffUNet 生成样本，并利用目标域少量数据进行 MMD 筛选。
+        这里 target_data 的数据格式为 (features, pos, cls)，
+        根据 (pos, cls) 组合提取目标样本作为参考，用于条件生成及 MMD 筛选，
+        确保生成样本在各个小类别上都有较好的表现。
+
+        参数：
+            model: DiffUNet 模型
+            target_data: 目标域数据，列表或其他可迭代对象，每个元素为 (features, pos, cls)
+            num_generated: 对每个 (pos, cls) 组合生成样本的次数
+            timesteps: reverse process 中所需的时间步数
+
+        返回：
+            生成的样本和对应的 (pos, cls) 标签（以 tensor 形式返回）
+        """
+        model.eval()
+        generated_samples = []
+        generated_labels = []
+
+        # 构建目标域中所有唯一 (pos, cls) 组合
+        unique_combinations = set()
+        for sample in target_data:
+            features, pos, cls = sample
+            unique_combinations.add((pos, cls))
+
+        # 针对每个 (pos, cls) 组合进行采样和生成
+        for pos, cls in unique_combinations:
+            # 收集所有匹配当前 (pos, cls) 组合的样本
+            comb_samples = [sample for sample in target_data if sample[1] == pos and sample[2] == cls]
+            if len(comb_samples) == 0:
+                continue
+
+            # 将所有该类别的特征汇总，作为 MMD 参考数据
+            ref_data = torch.stack([s[0] for s in comb_samples], dim=0)
+
+            # 对每个组合生成指定数量的样本
+            for _ in range(num_generated):
+                # 随机从该组合中抽取一个样本作为条件
+                idx = torch.randint(0, len(comb_samples), (1,)).item()
+                condition = comb_samples[idx][0]
+                # 生成样本：调用逆过程函数
+                generated = self.reverse_process(model, condition, timesteps)
+                # 计算生成样本与该类别参考数据之间的 MMD 值
+                mmd = self.mmd_loss(generated, ref_data)
+                if mmd.item() < 0.3:  # MMD 阈值，可根据需要调整
+                    generated_samples.append(generated)
+                    # 记录生成样本的标签，这里将 (pos, cls) 用作生成样本的标签
+                    generated_labels.append(torch.tensor([pos, cls]))
+
+        if len(generated_samples) == 0:
+            return None, None
+
+        # 拼接所有生成样本和标签，并移动到指定设备上
+        return torch.cat(generated_samples, dim=0), torch.stack(generated_labels, dim=0).to(self.device)
 
     def reverse_process(self, model, condition, timesteps=50):
         """
@@ -286,7 +346,7 @@ class train_utils(object):
 
             print(f"[Classifier Epoch {epoch+1}/{epochs}] Loss: {total_loss/len(dataloader):.6f}")
 
-    def train(self):
+    def diff_train(self):
         """
         整个训练流程：
           1. 使用源域所有数据训练 DiffUNet（扩散生成器）
