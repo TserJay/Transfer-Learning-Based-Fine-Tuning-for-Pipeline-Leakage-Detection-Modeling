@@ -41,7 +41,6 @@ def parse_args():
     parser.add_argument('--eval_all', type=bool, default=True, help='whether using all samples to update the results')
     parser.add_argument('--adabn_epochs', type=int, default=3, help='the number of training process')
 
-
     # training parameters
     parser.add_argument('--max_epoch', type=int, default=200, help='max number of epoch')
     parser.add_argument('--print_step', type=int, default=600, help='the interval of log training information') # 待定参数
