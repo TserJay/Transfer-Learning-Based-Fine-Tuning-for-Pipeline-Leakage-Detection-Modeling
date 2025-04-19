@@ -21,7 +21,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, classificat
 
 import torch.nn.functional as F
 import datasets as datasets
-import models.Net as models
+import models.Net_v200 as models
 import models.Diff_UNet as Diff_UNet
 
 
@@ -435,6 +435,7 @@ class train_utils(object):
                 #         if i >= 3:  # 打印前三个样本
                 #             break
                 # ###############################################
+                
                 # Set model to train mode or test mode
                 if phase != 'target_val':
                     if phase=='source_train':

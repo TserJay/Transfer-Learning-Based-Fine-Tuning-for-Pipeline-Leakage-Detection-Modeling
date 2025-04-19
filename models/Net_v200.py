@@ -6,13 +6,19 @@ from torch.nn import init
 import math
 from einops import rearrange
 from torch.utils.hooks import RemovableHandle
-from timm.models.layers import DropPath
+from timm.layers import DropPath
 
 import torch.nn.functional as F
 
 # from models.embed import DepthwiseSeparableConv1d, DataEmbedding, MLP
 # import summary
 # from torchsummary import summary
+
+
+
+# 改进Bottle2neck内部结构
+
+
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)   多层感知器FFN"""
@@ -94,182 +100,187 @@ class CoordinateAttention(nn.Module):
 
         # 将注意力权重应用到输入特征图上
         return x * y.expand_as(x)
-class Bottle2neck(nn.Module): 
-    expansion = 4
-
-    def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=26, scale = 4, stype='normal'):
-        """ Constructor
-        Args:
-            inplanes: input channel dimensionality
-            planes: output channel dimensionality
-            stride: conv stride. Replaces pooling layer.
-            downsample: None when stride = 1
-            baseWidth: basic width of conv3x3
-            scale: number of scale.
-            type: 'normal': normal set. 'stage': first block of a new stage.
-        """
-        super(Bottle2neck, self).__init__()
-
-        width = int(math.floor(planes * (baseWidth/64.0)))
-        self.conv1 = nn.Conv1d(inplanes, width*scale, kernel_size=1, bias=False)  
-        self.bn1 = nn.BatchNorm1d(width*scale)
-        # self.se1 = SE_Block(width*scale)
-        
-        
-        if scale == 1:
-          self.nums = 1
-        else:
-          self.nums = scale -1
-        if stype == 'stage':
-            self.pool = nn.AvgPool1d(kernel_size=5, stride = stride, padding=2)            
-            # self.atten = MixedAttention(width)
-            self.se2 = SE_Block(width)
-            # co_atten 模块
-            self.co_atten = CoordinateAttention (width)
-        convs = []
-        bns = []
-        for i in range(self.nums):
-          convs.append(nn.Conv1d(width, width, kernel_size=5, stride = stride, padding=2, bias=False))
-          bns.append(nn.BatchNorm1d(width))
-
-        self.convs = nn.ModuleList(convs)
-        self.bns = nn.ModuleList(bns)
-
-        self.conv3 = nn.Conv1d(width*scale, planes * self.expansion, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm1d(planes * self.expansion)
-        # self.se3 = SE_Block(planes * self.expansion)
-
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stype = stype
-        self.scale = scale
-        self.width  = width
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        # out = self.se1(out)  #se模块
-     
-        out = self.relu(out)
-
-        spx = torch.split(out, self.width, 1)
-        for i in range(self.nums):
-          if i==0 or self.stype=='stage':
-            sp = spx[i]
-          else:
-            sp = sp + spx[i]
-          sp = self.convs[i](sp)
-          
-          sp = self.relu(self.bns[i](sp))
-          if i==0:
-            out = sp
-          else:
-            out = torch.cat((out, sp), 1)
-        if self.scale != 1 and self.stype=='normal':
-          out = torch.cat((out, spx[self.nums]),1)
-        elif self.scale != 1 and self.stype=='stage':
-          out = torch.cat((out, self.pool(self.co_atten(self.se2(spx[self.nums]) )  )),1)
-        #   out = torch.cat((out, self.atten(spx[self.nums])),1)
-         
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-        # out = self.se3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out += residual
-        out = self.relu(out)
-
-        return out
-
-
-# 假设你已经定义了 SE_Block 和 CoordinateAttention
-# class Bottle2neck_v2(nn.Module): 
+    
+# class Bottle2neck(nn.Module): 
 #     expansion = 4
 
-#     def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=128, scale=2, stype='normal', drop_prob=0.2, lora_rank=4):
-#         super(Bottle2neck_v2, self).__init__()
+#     def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=26, scale = 4, stype='normal'):
+#         """ Constructor
+#         Args:
+#             inplanes: input channel dimensionality
+#             planes: output channel dimensionality
+#             stride: conv stride. Replaces pooling layer.
+#             downsample: None when stride = 1
+#             baseWidth: basic width of conv3x3
+#             scale: number of scale.
+#             type: 'normal': normal set. 'stage': first block of a new stage.
+#         """
+#         super(Bottle2neck, self).__init__()
 
-#         width = int(math.floor(planes * (baseWidth / 64.0)))
-#         self.conv1 = nn.Conv1d(inplanes, width * scale, kernel_size=1, bias=False)  
-#         self.bn1 = nn.BatchNorm1d(width * scale)
-
-#         self.nums = 1 if scale == 1 else scale - 1
-#         self.stype = stype
-#         self.scale = scale
-#         self.width = width
-#         self.relu = nn.ReLU(inplace=True)
-#         self.drop_path = DropPath(drop_prob) if drop_prob > 0. else nn.Identity()
-
+#         width = int(math.floor(planes * (baseWidth/64.0)))
+#         self.conv1 = nn.Conv1d(inplanes, width*scale, kernel_size=1, bias=False)  
+#         self.bn1 = nn.BatchNorm1d(width*scale)
+#         # self.se1 = SE_Block(width*scale)
+        
+        
+#         if scale == 1:
+#           self.nums = 1
+#         else:
+#           self.nums = scale -1
 #         if stype == 'stage':
-#             self.pool = nn.AvgPool1d(kernel_size=5, stride=stride, padding=2)            
+#             self.pool = nn.AvgPool1d(kernel_size=5, stride = stride, padding=2)            
+#             # self.atten = MixedAttention(width)
 #             self.se2 = SE_Block(width)
-#             self.co_atten = CoordinateAttention(width)
-
+#             # co_atten 模块
+#             self.co_atten = CoordinateAttention (width)
 #         convs = []
 #         bns = []
-#         loras = []
-#         for _ in range(self.nums):
-#             convs.append(nn.Conv1d(width, width, kernel_size=5, stride=stride, padding=2, bias=False))
-#             bns.append(nn.BatchNorm1d(width))
-#             loras.append(self._make_lora(width, rank=lora_rank))
+#         for i in range(self.nums):
+#           convs.append(nn.Conv1d(width, width, kernel_size=5, stride = stride, padding=2, bias=False))
+#           bns.append(nn.BatchNorm1d(width))
 
 #         self.convs = nn.ModuleList(convs)
 #         self.bns = nn.ModuleList(bns)
-#         self.loras = nn.ModuleList(loras)
 
-#         self.conv3 = nn.Conv1d(width * scale, planes * self.expansion, kernel_size=1, bias=False)
+#         self.conv3 = nn.Conv1d(width*scale, planes * self.expansion, kernel_size=1, bias=False)
 #         self.bn3 = nn.BatchNorm1d(planes * self.expansion)
-#         self.dropout = nn.Dropout(p=drop_prob)
+#         # self.se3 = SE_Block(planes * self.expansion)
 
-#         # ✅ 自动构造 downsample 分支（如果维度不一致）
-#         if downsample is None and (inplanes != planes * self.expansion or stride != 1):
-#             self.downsample = nn.Sequential(
-#                 nn.Conv1d(inplanes, planes * self.expansion, kernel_size=1, stride=stride, bias=False),
-#                 nn.BatchNorm1d(planes * self.expansion)
-#             )
-#         else:
-#             self.downsample = downsample
-
-#     def _make_lora(self, width, rank=4):
-#         return nn.Sequential(
-#             nn.Conv1d(width, rank, kernel_size=1, bias=False),
-#             nn.Conv1d(rank, width, kernel_size=1, bias=False)
-#         )
+#         self.relu = nn.ReLU(inplace=True)
+#         self.downsample = downsample
+#         self.stype = stype
+#         self.scale = scale
+#         self.width  = width
 
 #     def forward(self, x):
 #         residual = x
 
-#         out = self.relu(self.bn1(self.conv1(x)))
+#         out = self.conv1(x)
+#         out = self.bn1(out)
+#         # out = self.se1(out)  #se模块
+     
+#         out = self.relu(out)
+
 #         spx = torch.split(out, self.width, 1)
-
 #         for i in range(self.nums):
-#             sp = spx[i] if (i == 0 or self.stype == 'stage') else sp + spx[i]
-#             sp = self.convs[i](sp)
-#             sp = self.loras[i](sp)
-#             sp = self.relu(self.bns[i](sp))
-#             out = sp if i == 0 else torch.cat((out, sp), 1)
+#           if i==0 or self.stype=='stage':
+#             sp = spx[i]
+#           else:
+#             sp = sp + spx[i]
+#           sp = self.convs[i](sp)
+          
+#           sp = self.relu(self.bns[i](sp))
+#           if i==0:
+#             out = sp
+#           else:
+#             out = torch.cat((out, sp), 1)
+#         if self.scale != 1 and self.stype=='normal':
+#           out = torch.cat((out, spx[self.nums]),1)
+#         elif self.scale != 1 and self.stype=='stage':
+#           out = torch.cat((out, self.pool(self.co_atten(self.se2(spx[self.nums]) )  )),1)
+#         #   out = torch.cat((out, self.atten(spx[self.nums])),1)
+         
 
-#         if self.scale != 1 and self.stype == 'normal':
-#             out = torch.cat((out, spx[self.nums]), 1)
-#         elif self.scale != 1 and self.stype == 'stage':
-#             attention_input = self.se2(spx[self.nums])
-#             attention_input = self.co_atten(attention_input)
-#             out = torch.cat((out, self.pool(attention_input)), 1)
+#         out = self.conv3(out)
+#         out = self.bn3(out)
+#         # out = self.se3(out)
 
-#         out = self.dropout(self.bn3(self.conv3(out)))
-
-#         # ✅ 确保 residual 通道数与 out 一致
 #         if self.downsample is not None:
 #             residual = self.downsample(x)
 
-#         out = self.drop_path(out) + residual
+#         out += residual
 #         out = self.relu(out)
+
 #         return out
+
+
+# 假设你已经定义了 SE_Block 和 CoordinateAttention
+class Bottle2neck_v200(nn.Module): 
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=128, scale=2, stype='normal', drop_prob=0.2, lora_rank=4):
+        super(Bottle2neck_v200, self).__init__()
+
+        width = int(math.floor(planes * (baseWidth / 64.0)))
+        self.conv1 = nn.Conv1d(inplanes, width * scale, kernel_size=1, bias=False)  
+        self.bn1 = nn.BatchNorm1d(width * scale)
+
+        self.nums = 1 if scale == 1 else scale - 1
+        self.stype = stype
+        self.scale = scale
+        self.width = width
+        self.relu = nn.ReLU(inplace=True)
+        self.drop_path = DropPath(drop_prob) if drop_prob > 0. else nn.Identity()
+
+        if stype == 'stage':
+            self.pool = nn.AvgPool1d(kernel_size=5, stride=stride, padding=2)            
+            self.se2 = SE_Block(width)
+            self.co_atten = CoordinateAttention(width)
+
+        convs = []
+        bns = []
+        loras = []
+        for _ in range(self.nums):
+            convs.append(nn.Conv1d(width, width, kernel_size=5, stride=stride, padding=2, bias=False))
+            bns.append(nn.BatchNorm1d(width))
+            loras.append(self._make_lora(width, rank=lora_rank))
+
+        self.convs = nn.ModuleList(convs)
+        self.bns = nn.ModuleList(bns)
+        self.loras = nn.ModuleList(loras)
+
+        self.conv3 = nn.Conv1d(width * scale, planes * self.expansion, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm1d(planes * self.expansion)
+        self.dropout = nn.Dropout(p=drop_prob)
+
+        # 自动构造 downsample 分支（如果维度不一致）
+        if downsample is None and (inplanes != planes * self.expansion or stride != 1):
+            self.downsample = nn.Sequential(
+                nn.Conv1d(inplanes, planes * self.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(planes * self.expansion)
+            )
+        else:
+            self.downsample = downsample
+
+    def _make_lora(self, width, rank=4):
+        return nn.Sequential(
+            nn.Conv1d(width, rank, kernel_size=1, bias=False),
+            nn.Conv1d(rank, width, kernel_size=1, bias=False)
+        )
+
+    def forward(self, x):
+        residual = x
+
+        out = self.relu(self.bn1(self.conv1(x)))
+        spx = torch.split(out, self.width, 1)
+
+        for i in range(self.nums):
+            sp = spx[i] if (i == 0 or self.stype == 'stage') else sp + spx[i]
+            sp = self.convs[i](sp)
+            # sp = self.loras[i](sp)
+            sp = self.relu(self.bns[i](sp))
+            out = sp if i == 0 else torch.cat((out, sp), 1)
+
+        if self.scale != 1 and self.stype == 'normal':
+            out = torch.cat((out, spx[self.nums]), 1)
+        elif self.scale != 1 and self.stype == 'stage':
+            attention_input = self.se2(spx[self.nums])
+            attention_input = self.co_atten(attention_input)
+            # 动态门控制，减弱注意力的权重
+            gate = torch.sigmoid(attention_input.mean(dim=-1, keepdim=True))  # (B, C, 1)
+            attention_input = attention_input * (1 - gate) + spx[self.nums] * gate  # 逐通道动态混合
+            out = torch.cat((out, self.pool(attention_input)), 1)
+             
+            
+        out = self.dropout(self.bn3(self.conv3(out)))
+
+        #  确保 residual 通道数与 out 一致
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out = self.drop_path(out) + residual
+        out = self.relu(out)
+        return out
 
 
 
@@ -518,7 +529,7 @@ class Res2Net(nn.Module):
         return x,y
 
 
-class Net(nn.Module): 
+class Net_v200(nn.Module): 
     def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
         # def __init__(self, in_channel=3, kernel_size=3, in_embd=128, d_model=512, in_head=8, num_block=1, dropout=0.3, d_ff=128, out_c=1):
         ##################  改动！！！
@@ -531,10 +542,10 @@ class Net(nn.Module):
         :param d_ff: feedforward of transformer
         :param out_c: class_num
         '''
-        super(Net, self).__init__()
+        super(Net_v200, self).__init__()
         
 
-        self.backbone = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
+        self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
         # basewidth= 448   1792/448=4
         
     
@@ -589,7 +600,7 @@ if __name__ == '__main__':
     x = torch.randn(parameter1, 2, 1792).to(0)
     
 
-    model = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth =32, scale = 2).to(0)  # [3,4,23,3]
+    model = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth =32, scale = 2).to(0)  # [3,4,23,3]
     print(model)
     # model = model(in_channel=3, kernel_size=3, in_embd=64, d_model=112, in_head=2, num_block=1, d_ff=64, dropout=0.2, out_c=4).to(0)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
