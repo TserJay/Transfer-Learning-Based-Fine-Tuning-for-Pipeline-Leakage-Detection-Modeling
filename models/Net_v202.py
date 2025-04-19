@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 
 # 改进Bottle2neck内部结构
+# 改进整体主干结构，拆分LSTM,并进行多尺度特征融合
 
 
 
@@ -387,111 +388,38 @@ class LayerNormLSTM(nn.Module):
         x, _ = self.lstm(x)
         x = self.layer_norm(x)  # 对 LSTM 输出归一化
         return x
-    
-class LSTMStackFusion(nn.Module):
-    def __init__(self, dims, out_dim=64):
-        super(LSTMStackFusion, self).__init__()
-        self.reduces = nn.ModuleList()
-        for dim in dims:
-            if dim != out_dim:
-                self.reduces.append(nn.Linear(dim, out_dim))
-            else:
-                self.reduces.append(nn.Identity())
-
-        self.attn_fc = nn.Sequential(
-            nn.Linear(out_dim, 32),
-            nn.Tanh(),
-            nn.Linear(32, 1)
-        )
-
-    def resize_time(self, x, target_len):
-        # x: [T, B, C]
-        return F.interpolate(x.permute(1, 2, 0), size=target_len, mode='linear', align_corners=True).permute(2, 0, 1)
-
-    def forward(self, features):
-        # features: list of [T, B, C]
-        min_len = min([x.shape[0] for x in features])
-
-        resized = []
-        for i, x in enumerate(features):
-            x = self.resize_time(x, min_len)  # [T, B, C]
-            x = self.reduces[i](x)            # [T, B, out_dim]
-            resized.append(x)
-
-        x_stack = torch.stack(resized, dim=0)              # [N, T, B, C]
-        attn_weights = self.attn_fc(x_stack).softmax(dim=0)  # [N, T, B, 1]
-        fused = (attn_weights * x_stack).sum(dim=0)        # [T, B, C]
-        return fused
 
 
 class Res2Net(nn.Module):
 
-    def __init__(self, block, layers, baseWidth = 26, scale = 2):
+    def __init__(self, block, layers, baseWidth=26, scale=2):
         self.inplanes = 64
         super(Res2Net, self).__init__()
         self.baseWidth = baseWidth
         self.scale = scale
 
-        self.conv1 = nn.Conv1d(3, 64, kernel_size=7 , stride=2, padding=4,  #self.conv1 = nn.Conv1d(3, 64, kernel_size=7 , stride=2, padding=3,  
-                               bias=False)
+        self.conv1 = nn.Conv1d(3, 64, kernel_size=7, stride=2, padding=4, bias=False)
         self.bn1 = nn.BatchNorm1d(64)
-
-        self.conv2 = nn.Conv1d(3, 32, kernel_size=7 , stride=2, padding=4, bias=False)
-        self.bn2 = nn.BatchNorm1d(32)
-
         self.relu = nn.ReLU(inplace=True)
-
-        # 初始化
         self.fused_conv_bn_relu1 = FusedConvBNReLU(self.conv1, self.bn1)
-        self.fused_conv_bn_relu2 = FusedConvBNReLU(self.conv2, self.bn2)
 
-
-        
-        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        # self.shrinkage = Shrinkage(out_channels, gap_size=(1), reduction=reduction)
-        # self.bn = nn.Sequential(      
-        #     nn.BatchNorm1d(256 * block.expansion),
-        #     nn.ReLU(inplace=True),
-        #     self.shrinkage #特征缩减  
-        # )
         self.layer1 = self._make_layer(block, 64, layers[0])
-        self.BiLSTM1 = LayerNormLSTM(897,448)
-
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.BiLSTM2 = LayerNormLSTM(448,224)
-      
         self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
-        self.BiLSTM3 = LayerNormLSTM(224,112)
-    
         self.layer4 = self._make_layer(block, 8, layers[3], stride=2)
-        self.BiLSTM4 = LayerNormLSTM(112,64)
 
-        
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-     
+        # 拆分的 LSTM 层，全部输出为64
+        self.BiLSTM1 = LayerNormLSTM(897, 64)
+        self.BiLSTM2 = LayerNormLSTM(64, 64)
+        self.BiLSTM3 = LayerNormLSTM(64, 64)
+        self.BiLSTM4 = LayerNormLSTM(64, 64)
 
-
-
-        self.LoraLayer_1 = LoraLayer(897,897)
-        self.LoraLayer_1.update_layer('adapter1', r=4  , lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
-       
-
-        self.LoraLayer_2 = LoraLayer(897,896)
-        self.LoraLayer_2.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
-        self.lora_fc_2 = nn.Linear(64,256)
-
-        self.LoraLayer_3 = LoraLayer(897,448)
-        self.LoraLayer_3.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
-        self.lora_fc_3 = nn.Linear(64,512)
-
-        self.LoraLayer_4 = LoraLayer(897,224)
-        self.LoraLayer_4.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
-        self.lora_fc_4 = nn.Linear(64,256)
-
-        self.LoraLayer_5 = LoraLayer(897,128)
-        self.LoraLayer_5.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
-        #self.lora_fc_4 = nn.Linear(64,256)
-
+        # Attention 融合层
+        self.attn_fc = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            nn.Linear(32, 1)
+        )
 
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
@@ -507,126 +435,55 @@ class Res2Net(nn.Module):
                 nn.Conv1d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm1d(planes * block.expansion),
-            )   # 检查是否进行下采样操作
+            )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample=downsample, 
-                        stype='stage', baseWidth = self.baseWidth, scale=self.scale))
+        layers.append(block(self.inplanes, planes, stride, downsample=downsample,
+                             stype='stage', baseWidth=self.baseWidth, scale=self.scale))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, baseWidth = self.baseWidth, scale=self.scale))
+            layers.append(block(self.inplanes, planes, baseWidth=self.baseWidth, scale=self.scale))
 
         return nn.Sequential(*layers)
-    
-    def forward(self, x, adapter_name):
-        y = x
-        
-        x = self.fused_conv_bn_relu1(x)  # 融合 Conv + BN + ReLU
-        y = self.fused_conv_bn_relu2(y)
- 
-        lora_outputs = [
-            self.LoraLayer_1(x, adapter_name),
-            self.LoraLayer_2(x, adapter_name),
-            self.LoraLayer_3(x, adapter_name),
-            self.LoraLayer_4(x, adapter_name),
-            self.LoraLayer_5(y, adapter_name),
-            ]         # 计算 LoraLayer 并缓存结果
 
-        # 融合点1
-        x = x + lora_outputs[0]
+    def forward(self, x):
+        x = self.fused_conv_bn_relu1(x)
+        
         x = self.layer1(x)
-        x = self.BiLSTM1(x)
+        x1 = self.BiLSTM1(x)  # 输出 [seq, batch, 64]
 
-        # 融合点2
-        lora_fc_out_2 = self.lora_fc_2(lora_outputs[1].reshape(-1, 64)).reshape(32, 256, 896)
-        x = x + lora_fc_out_2
-        x = self.layer2(x)
-        x = self.BiLSTM2(x)
+        x = self.layer2(x1)
+        x2 = self.BiLSTM2(x)
 
-        # 融合点3
-        lora_fc_out_3 = self.lora_fc_3(lora_outputs[2].reshape(-1, 64)).reshape(32, 512, 448)
-        x = x + lora_fc_out_3
-        x = self.layer3(x)
-        x = self.BiLSTM3(x)
+        x = self.layer3(x2)
+        x3 = self.BiLSTM3(x)
 
-        # 融合点4  
-        lora_fc_out_4 = self.lora_fc_4(lora_outputs[3].reshape(-1, 64)).reshape(32, 256, 224)
-        x = x + lora_fc_out_4
-        x = self.layer4(x)
-        x = self.BiLSTM4(x.permute(1, 0, 2))
+        x = self.layer4(x3)
+        x4 = self.BiLSTM4(x)
+
+        # Attention 融合
+        x_stack = torch.stack([x1, x2, x3, x4], dim=0)  # [4, seq, batch, 64]
+        attn_weights = self.attn_fc(x_stack).softmax(dim=0)  # [4, seq, batch, 1]
+        fused = (attn_weights * x_stack).sum(dim=0)  # [seq, batch, 64]
+
+        return fused
 
 
-        # pos = self.fc1(x)
-        # cls = self.fc2(x)
-
-        y = lora_outputs[4]
-
-        return x,y
-
-
-class Net_v200(nn.Module): 
-    def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
-        # def __init__(self, in_channel=3, kernel_size=3, in_embd=128, d_model=512, in_head=8, num_block=1, dropout=0.3, d_ff=128, out_c=1):
-        ##################  改动！！！
-
-        '''
-        :param in_embd: embedding
-        :param d_model: embedding of transformer encoder
-        :param in_head: mutil-heat attention
-        :param dropout:
-        :param d_ff: feedforward of transformer
-        :param out_c: class_num
-        '''
-        super(Net_v200, self).__init__()
-        
-
-        self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
-        # basewidth= 448   1792/448=4
-        
-    
-
-        # self.enc_embedding_en = DataEmbedding(in_embd, d_model, dropout=dropout)
-        # DataEmbedding数据嵌入模块，对输入的数据进行嵌入处理
-        
-
-        layers = []
-        # for _ in range(num_block):
-        #     layers.append(
-        #         Encoder_exformer(
-        #             layer=Attention(dim=d_model, num_heads=in_head, attn_drop=dropout, proj_drop=0.2),
-        #             norm_layer=torch.nn.LayerNorm(d_model),
-        #             d_model=d_model,
-        #             dropout=dropout,
-        #             d_ff=d_ff
-        #         )
-        #     )
-        self.transformer_encoder = nn.Sequential(*layers)
-
-
+class Net_v201(nn.Module):
+    def __init__(self, in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
+        super(Net_v201, self).__init__()
+        self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth=128, scale=2)
         self.ap = nn.AdaptiveAvgPool1d(output_size=1)
+        self.projetion_pos_1 = MLP(input_dim=64, hidden_dim=64, output_dim=32, num_layers=1)
+        self.fc1 = nn.Linear(32, 12)
 
-        self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=32, num_layers=1)
-        # self.projetion_pos_2 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1)
-        self.projetion_cls = MLP(input_dim=113, hidden_dim=64, output_dim=4, num_layers=1)
-
-        self.fc1 = nn.Linear(32 , 12)  # 
-        # self.fc2 = nn.Linear(128 , 4)
-        self.fc_lora =nn.Linear(64,32)
-        
-
-
-    def forward(self, x ):
-
-        # x = self.backbone1(x)
-        x,y = self.backbone(x,'adapter1')  #[32, 128, 113]  源域分支
-           
-        x = x+y   # 绕过4层DPN网络
-        x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
-        view = self.projetion_pos_1(x_1)  #孔径位置信息
+    def forward(self, x):
+        x = self.backbone(x)  # 输出为 [seq, batch, 64]
+        x = self.ap(x.permute(1, 2, 0)).squeeze(-1)  # [batch, 64]
+        view = self.projetion_pos_1(x)
         pos = self.fc1(view)
-	
+        return pos, view
 
-        return pos,view
 
 
 if __name__ == '__main__':
