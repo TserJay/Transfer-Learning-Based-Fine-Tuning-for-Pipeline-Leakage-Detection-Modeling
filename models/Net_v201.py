@@ -282,73 +282,67 @@ class LayerNormLSTM(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_size * (2 if bidirectional else 1))  # 归一化 LSTM 输出
 
     def forward(self, x):
+        x = x.permute(0, 2, 1)
         x, _ = self.lstm(x)
         x = self.layer_norm(x)  # 对 LSTM 输出归一化
-        return x
+        y = x.permute(0, 2, 1)
+        return x, y
     
+class MultiScaleTransformerFusion(nn.Module):
+    def __init__(self, input_dims, d_model=64, nhead=2, num_layers=2, dim_feedforward=512, dropout=0.1):
+        """
+        input_dims: list[int], 各个输入分支的通道数
+        """
+        super().__init__()
+        self.projections = nn.ModuleList([
+            nn.Linear(in_dim, d_model) for in_dim in input_dims
+        ])
 
-class LSTMStackFusion(nn.Module):
-    def __init__(self, dims, out_dim=64):
-        super(LSTMStackFusion, self).__init__()
-        self.reduces = nn.ModuleList()
-        for dim in dims:
-            if dim != out_dim:
-                self.reduces.append(nn.Linear(dim, out_dim))
-            else:
-                self.reduces.append(nn.Identity())
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+                                                   dim_feedforward=dim_feedforward, dropout=dropout,
+                                                   batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fusion_fc = nn.Linear(d_model, d_model)
 
-        self.attn_fc = nn.Sequential(
-            nn.Linear(out_dim, 32),
-            nn.Tanh(),
-            nn.Linear(32, 1)
-        )
-
-    def resize_time(self, x, target_len):
-        # x: [T, B, C]
-        return F.interpolate(x.permute(1, 2, 0), size=target_len, mode='linear', align_corners=True).permute(2, 0, 1)
-
-    
     def forward(self, features):
-        # features: list of [T, B, C]
-        min_len = min([x.shape[0] for x in features])
+        """
+        features: list[Tensor], 每个 Tensor 形状为 [B, T_i, C_i]
+        """
+        batch_size = features[0].shape[0]
+        proj_feats, lengths = [], []
 
-        resized = []
-        for i, x in enumerate(features):
-            x = self.resize_time(x, min_len)  # [T, B, C_in]
-            T, B, C = x.shape
-            print(f"x shape: {x.shape}, C_in: {C}")  # 检查 C_in 是否正确
-            
-            x = x.contiguous().view(-1, C)  # [T*B, C_in]
-            print(f"x flattened shape: {x.shape}")
-            
-            print(f"self.reduces[i] weight shape: {self.reduces[i].weight.shape}")  # 检查 Linear 层维度
-            x = self.reduces[i](x)  # [T*B, C_out]
-            
-            x = x.view(T, B, -1)  # [T, B, C_out]
-         
-            
-        # for i, x in enumerate(features):
-        #     # 步骤1：时间维度调整
-        #     x = self.resize_time(x, min_len)  # [T, B, C_in]
-            
-        #     # 步骤2：确保张量连续
-        #     x = x.contiguous()  # 关键修复！保证后续view操作安全
-            
-        #     # 步骤3：降维处理
-        #     T, B, C = x.shape
-        #     x = self.reduces[i](x.view(-1, C))  # [T*B, C_in] → [T*B, C_out]
-            
-        #     # 步骤4：恢复形状
-        #     x = x.view(T, B, -1)  # [T, B, C_out]
-            resized.append(x)
-        
-        # 步骤5：特征融合
-        x_stack = torch.stack(resized, dim=0)  # [N, T, B, C]
-        attn_weights = self.attn_fc(x_stack).softmax(dim=0)  # [N, T, B, 1]
-        fused = (attn_weights * x_stack).sum(dim=0)  # [T, B, C]
-        
+        for x, proj in zip(features, self.projections):
+            B, T, C = x.shape
+            x_proj = proj(x)  # [B, T, d_model]
+            proj_feats.append(x_proj)
+            lengths.append(T)
+
+        max_len = max(lengths)
+        padded_feats, masks = [], []
+
+        for x, l in zip(proj_feats, lengths):
+            pad_len = max_len - l
+            if pad_len > 0:
+                x = F.pad(x, (0, 0, 0, pad_len))  # pad 时间维
+            padded_feats.append(x)
+
+            mask = torch.zeros((batch_size, max_len), dtype=torch.bool, device=x.device)
+            mask[:, l:] = True  # True 为 masked
+            masks.append(mask)
+
+        stacked_feats = torch.stack(padded_feats, dim=1)  # [B, N, T, d_model]
+        stacked_feats = stacked_feats.view(batch_size * len(features), max_len, -1)
+        all_masks = torch.cat(masks, dim=0)  # [B*N, T]
+
+        transformer_out = self.transformer(stacked_feats, src_key_padding_mask=all_masks)
+        transformer_out = transformer_out[:, 0, :]  # 取每个分支的第一个 token 表示
+        transformer_out = transformer_out.view(batch_size, len(features), -1)
+
+        fused = transformer_out.mean(dim=1)  # [B, d_model]
+        fused = self.fusion_fc(fused)        # [B, d_model]
+
         return fused
-        
+
 
 class Res2Net(nn.Module):
 
@@ -369,20 +363,21 @@ class Res2Net(nn.Module):
         self.layer4 = self._make_layer(block, 8, layers[3], stride=2)
 
         # 拆分的 LSTM 层，全部输出为64
-        self.BiLSTM1 = LayerNormLSTM(897, 448)
-        self.BiLSTM2 = LayerNormLSTM(448, 224)
-        self.BiLSTM3 = LayerNormLSTM(224, 112)
-        self.BiLSTM4 = LayerNormLSTM(112, 64)
+        self.BiLSTM1 = LayerNormLSTM(256, 128)
+        self.BiLSTM2 = LayerNormLSTM(512, 256)
+        self.BiLSTM3 = LayerNormLSTM(256, 128)
+        self.BiLSTM4 = LayerNormLSTM(32, 56)
 
-        # 添加融合模块
-        self.lstm_fusion = LSTMStackFusion(dims=[448, 224, 112, 64], out_dim=64)
-
-        # Attention 融合层
-        self.attn_fc = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.Tanh(),
-            nn.Linear(32, 1)
+        self.fusion_module = MultiScaleTransformerFusion(
+            input_dims=[256, 512, 256, 112],  # 你4个分支的C
+            d_model=64,
+            nhead=2,
+            num_layers=1
         )
+
+      
+
+
 
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
@@ -410,30 +405,31 @@ class Res2Net(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.fused_conv_bn_relu1(x)
+        # [32, 3, 1792]
+
+        x = self.fused_conv_bn_relu1(x) 
+    
+        x = self.layer1(x) # [32, 256, 897]
+        x1, x = self.BiLSTM1(x)  # x: [32, 256, 897] x1:[32, 897, 256]
         
-        x = self.layer1(x)
-        print(x.shape) # torch.Size([32, 256, 897])
-        x1 = self.BiLSTM1(x)  # 输出 [seq, batch, 64]
-        print(x1.shape) #torch.Size([32, 256, 128])
+        x = self.layer2(x)  # [32, 512, 449]
+        x2, x = self.BiLSTM2(x)  # x: [32, 512, 449] x2:[32, 449, 512]
+       
 
-        x = self.layer2(x1)
-        print(x.shape)
-        x2 = self.BiLSTM2(x)
-        print(x2.shape)
+        x = self.layer3(x)
+        x3, x = self.BiLSTM3(x)  # x: [32, 256, 225] x3:[32, 225, 256]
+ 
+       
+        x = self.layer4(x)
+        x4, x = self.BiLSTM4(x)  # x: [32,32,113] x4: [32, 113, 112]
+   
 
-        x = self.layer3(x2)
-        print(x.shape)
-        x3 = self.BiLSTM3(x)
-        print(x3.shape)
 
-        x = self.layer4(x3)
-        print(x.shape) 
-        x4 = self.BiLSTM4(x)
-        print(x4.shape) 
+        fused = self.fusion_module([x1, x2, x3, x4])  # [B, d_model]
 
-        # Attention 融合
-        fused = self.lstm_fusion([x1, x2, x3, x4])  # [T, B, 64]
+
+        # # Attention 融合
+        # fused = self.lstm_fusion([x1, x2, x3, x4])  # [T, B, 64]
 
         return fused
 
@@ -443,12 +439,14 @@ class Net_v201(nn.Module):
         super(Net_v201, self).__init__()
         self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth=128, scale=2)
         self.ap = nn.AdaptiveAvgPool1d(output_size=1)
-        self.projetion_pos_1 = MLP(input_dim=64, hidden_dim=64, output_dim=32, num_layers=1)
+        self.projetion_pos_1 = MLP(input_dim=64, hidden_dim=32, output_dim=32, num_layers=1)
         self.fc1 = nn.Linear(32, 12)
 
     def forward(self, x):
-        x = self.backbone(x)  # 输出为 [seq, batch, 64]
-        x = self.ap(x.permute(1, 2, 0)).squeeze(-1)  # [batch, 64]
+        x = self.backbone(x)  # 输出为 BCT[32,32,113]
+        # print(x.shape)  [32,256]
+        # x = self.ap(x).squeeze(-1)  # [32, 32]
+        
         view = self.projetion_pos_1(x)
         pos = self.fc1(view)
         return pos, view

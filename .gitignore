@@ -7633,3 +7633,6 @@ checkpoint_adabn/0419-174244_Net_v201_3-012/train.log
 checkpoint_adabn/0419-174413_Net_v201_3-012/train.log
 checkpoint_adabn/0419-221152_Net_v201_3-012/train.log
 checkpoint_adabn/0419-221757_Net_v201_3-012/train.log
+checkpoint_adabn/0420-212918_Net_v201_3-012test/22-0.4618-best_model.pth
+checkpoint_adabn/0420-212918_Net_v201_3-012test/model_test.pth
+checkpoint_adabn/0420-212918_Net_v201_3-012test/train.log
