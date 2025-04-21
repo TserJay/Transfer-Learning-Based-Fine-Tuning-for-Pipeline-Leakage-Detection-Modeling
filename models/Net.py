@@ -6,6 +6,7 @@ from torch.nn import init
 import math
 from einops import rearrange
 from torch.utils.hooks import RemovableHandle
+from timm.models.layers import DropPath
 
 import torch.nn.functional as F
 
@@ -169,7 +170,7 @@ class Bottle2neck(nn.Module):
         if self.scale != 1 and self.stype=='normal':
           out = torch.cat((out, spx[self.nums]),1)
         elif self.scale != 1 and self.stype=='stage':
-          out = torch.cat((out, self.pool(     self.co_atten(self.se2(spx[self.nums]) )  )),1)
+          out = torch.cat((out, self.pool(self.co_atten(self.se2(spx[self.nums]) )  )),1)
         #   out = torch.cat((out, self.atten(spx[self.nums])),1)
          
 
@@ -184,7 +185,93 @@ class Bottle2neck(nn.Module):
         out = self.relu(out)
 
         return out
-    
+
+
+# 假设你已经定义了 SE_Block 和 CoordinateAttention
+# class Bottle2neck_v2(nn.Module): 
+#     expansion = 4
+
+#     def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=128, scale=2, stype='normal', drop_prob=0.2, lora_rank=4):
+#         super(Bottle2neck_v2, self).__init__()
+
+#         width = int(math.floor(planes * (baseWidth / 64.0)))
+#         self.conv1 = nn.Conv1d(inplanes, width * scale, kernel_size=1, bias=False)  
+#         self.bn1 = nn.BatchNorm1d(width * scale)
+
+#         self.nums = 1 if scale == 1 else scale - 1
+#         self.stype = stype
+#         self.scale = scale
+#         self.width = width
+#         self.relu = nn.ReLU(inplace=True)
+#         self.drop_path = DropPath(drop_prob) if drop_prob > 0. else nn.Identity()
+
+#         if stype == 'stage':
+#             self.pool = nn.AvgPool1d(kernel_size=5, stride=stride, padding=2)            
+#             self.se2 = SE_Block(width)
+#             self.co_atten = CoordinateAttention(width)
+
+#         convs = []
+#         bns = []
+#         loras = []
+#         for _ in range(self.nums):
+#             convs.append(nn.Conv1d(width, width, kernel_size=5, stride=stride, padding=2, bias=False))
+#             bns.append(nn.BatchNorm1d(width))
+#             loras.append(self._make_lora(width, rank=lora_rank))
+
+#         self.convs = nn.ModuleList(convs)
+#         self.bns = nn.ModuleList(bns)
+#         self.loras = nn.ModuleList(loras)
+
+#         self.conv3 = nn.Conv1d(width * scale, planes * self.expansion, kernel_size=1, bias=False)
+#         self.bn3 = nn.BatchNorm1d(planes * self.expansion)
+#         self.dropout = nn.Dropout(p=drop_prob)
+
+#         # ✅ 自动构造 downsample 分支（如果维度不一致）
+#         if downsample is None and (inplanes != planes * self.expansion or stride != 1):
+#             self.downsample = nn.Sequential(
+#                 nn.Conv1d(inplanes, planes * self.expansion, kernel_size=1, stride=stride, bias=False),
+#                 nn.BatchNorm1d(planes * self.expansion)
+#             )
+#         else:
+#             self.downsample = downsample
+
+#     def _make_lora(self, width, rank=4):
+#         return nn.Sequential(
+#             nn.Conv1d(width, rank, kernel_size=1, bias=False),
+#             nn.Conv1d(rank, width, kernel_size=1, bias=False)
+#         )
+
+#     def forward(self, x):
+#         residual = x
+
+#         out = self.relu(self.bn1(self.conv1(x)))
+#         spx = torch.split(out, self.width, 1)
+
+#         for i in range(self.nums):
+#             sp = spx[i] if (i == 0 or self.stype == 'stage') else sp + spx[i]
+#             sp = self.convs[i](sp)
+#             sp = self.loras[i](sp)
+#             sp = self.relu(self.bns[i](sp))
+#             out = sp if i == 0 else torch.cat((out, sp), 1)
+
+#         if self.scale != 1 and self.stype == 'normal':
+#             out = torch.cat((out, spx[self.nums]), 1)
+#         elif self.scale != 1 and self.stype == 'stage':
+#             attention_input = self.se2(spx[self.nums])
+#             attention_input = self.co_atten(attention_input)
+#             out = torch.cat((out, self.pool(attention_input)), 1)
+
+#         out = self.dropout(self.bn3(self.conv3(out)))
+
+#         # ✅ 确保 residual 通道数与 out 一致
+#         if self.downsample is not None:
+#             residual = self.downsample(x)
+
+#         out = self.drop_path(out) + residual
+#         out = self.relu(out)
+#         return out
+
+
 
 class LoraLayer(nn.Module):
     def __init__(self, in_features, out_features):
@@ -450,34 +537,7 @@ class Net(nn.Module):
         self.backbone = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
         # basewidth= 448   1792/448=4
         
-        
-
-        # self.backbone1 = nn.Sequential(
-        #     nn.Conv1d(3, 32, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(32),
-        #     nn.ReLU(inplace=True),
-
-        #     nn.Conv1d(32, 64, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-
-            
-        #     # DeformConv2d(32, 64, 3 , padding=1, modulation=True)
-
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv1d(64, 32, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-        #     nn.BatchNorm1d(32),
-        #     nn.ReLU(inplace=True),
-        # )
+    
 
         # self.enc_embedding_en = DataEmbedding(in_embd, d_model, dropout=dropout)
         # DataEmbedding数据嵌入模块，对输入的数据进行嵌入处理

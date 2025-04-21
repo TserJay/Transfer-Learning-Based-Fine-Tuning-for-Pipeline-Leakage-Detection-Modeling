@@ -21,7 +21,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, classificat
 
 import torch.nn.functional as F
 import datasets as datasets
-import models.Net as models
+import models.Net_v2012 as models
 import models.Diff_UNet as Diff_UNet
 
 
@@ -135,7 +135,6 @@ class train_utils(object):
         else:
             raise Exception("optimizer not implement")
 
-
         # Define the learning rate decay
         if args.lr_scheduler == 'step':
             steps = [int(step) for step in args.steps.split(',')]
@@ -163,7 +162,6 @@ class train_utils(object):
         self.criterion = nn.CrossEntropyLoss()
         # self.criterion = nn.SoftmaxCrossEntropyLoss()
     
-
     def set_input(self, input):
         data_set = []
         for data in input:
@@ -176,13 +174,8 @@ class train_utils(object):
             self.out_signals = torch.tensor(data_set)     
         return self.out_signals
     
-    # def wd(self,input):
 
-    #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
-      
-    #   return self.wd(input) 
     
-
     def train_diff_unet(self, model, source_data, batch_size=32, epochs=100):
         """
         使用源域数据训练 DiffUNet 模型（用于扩散生成）
@@ -435,6 +428,7 @@ class train_utils(object):
                 #         if i >= 3:  # 打印前三个样本
                 #             break
                 # ###############################################
+                
                 # Set model to train mode or test mode
                 if phase != 'target_val':
                     if phase=='source_train':
@@ -498,12 +492,7 @@ class train_utils(object):
       
                         epoch_loss += loss_temp
                         epoch_acc_pos += correct_pos
-                        #在这个epoch中正确的次数
-                        # precision = precision_score(label_pos, pred_pos, average='weighted')
-                        # recall = recall_score(label_pos, pred_pos, average='weighted')
-                        # f1 = f1_score(label_pos, pred_pos, average='weighted')
-
-
+                       
 
                         # Calculate the training information
                         if phase == 'source_train':
@@ -564,8 +553,16 @@ class train_utils(object):
                     if epoch_acc_pos > best_acc_pos:
                         best_acc_pos = epoch_acc_pos
 
+                        # 清理权重
+                        if hasattr(self, 'prev_best_model_path') and os.path.exists(self.prev_best_model_path):
+                            os.remove(self.prev_best_model_path)  # 删除上一个最优模型
+
                         logging.info("save best model epoch {}, acc_pos {:.4f}".format(epoch, epoch_acc_pos))
-                        torch.save(model_state_dic,os.path.join(self.save_dir, '{}-{:.4f}-best_model.pth'.format(epoch, best_acc_pos)))
+                        model_path =  os.path.join(self.save_dir, '{}-{:.4f}-best_model.pth'.format(epoch, best_acc_pos))
+                        torch.save(model_state_dic, model_path)
+
+                        # 更新上一个模型路径
+                        self.prev_best_model_path = model_path
 
                          # 对目标域所有的数据进行测试
                         if args.eval_test_all:

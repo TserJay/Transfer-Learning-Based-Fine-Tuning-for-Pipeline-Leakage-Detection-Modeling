@@ -306,13 +306,13 @@ class tune_utils(object):
 
             model_tune = MMDModel(base_model, num_classes=args.Fine_num_classes).to(self.device)
             # 冻结部分层的参数
-            layers_to_freeze = [#model_tune.base_model.backbone.conv1, model_tune.base_model.backbone.bn1,model_tune.base_model.backbone.relu,
+            layers_to_freeze = [#model_tune.feature_extractor.backbone.conv1, model_tune.feature_extractor.backbone.bn1,model_tune.feature_extractor.backbone.relu,
                                 
-                                # model_tune.base_model.backbone.layer1,model_tune.base_model.backbone.BiLSTM1,
-                                # model_tune.base_model.backbone.layer2,model_tune.base_model.backbone.BiLSTM2,
-                                # model_tune.base_model.backbone.layer3,model_tune.base_model.backbone.BiLSTM3, 
-                                # model_tune.base_model.backbone.layer4,model_tune.base_model.BiLSTM1,
-                                # model_tune.base_model.ap,
+                                # model_tune.feature_extractor.backbone.layer1,model_tune.feature_extractor.backbone.BiLSTM1,
+                                # model_tune.feature_extractor.backbone.layer2,model_tune.feature_extractor.backbone.BiLSTM2,
+                                # model_tune.feature_extractor.backbone.layer3,model_tune.feature_extractor.backbone.BiLSTM3, 
+                                # model_tune.feature_extractor.backbone.layer4,model_tune.feature_extractor.backbone.BiLSTM4,
+                                # model_tune.feature_extractor.ap,
 
                                 # model_tune.base_model.backbone.LoraLayer_1,model_tune.base_model.backbone.LoraLayer_2,
                                 # model_tune.base_model.backbone.LoraLayer_3,
