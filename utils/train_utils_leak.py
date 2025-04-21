@@ -175,7 +175,7 @@ class train_utils(object):
         return self.out_signals
     
 
-    
+    # 1. 源域训练 DiffUNet（仅用 source 训练）
     def train_diff_unet(self, model, source_data, batch_size=32, epochs=100):
         """
         使用源域数据训练 DiffUNet 模型（用于扩散生成）
@@ -204,6 +204,8 @@ class train_utils(object):
 
             print(f"[DiffUNet Epoch {epoch+1}/{epochs}] Loss: {total_loss/len(dataloader):.6f}")
 
+    
+
     def mmd_loss(self, source, target):
         """
         Calculate the MMD loss between source and target distributions
@@ -214,41 +216,50 @@ class train_utils(object):
 
 
 
-    def generate_samples(self, model, target_data, num_generated=10, timesteps=50):
+    def generate_candidates_by_condition(self, model, support_samples, num_per_class=11, timesteps=1792):
         """
-        使用 DiffUNet 生成样本，并利用目标域少量数据进行 MMD 筛选
-        注意：target_data 作为计算 MMD 的参考，通常应为少量目标域数据
-        
-        目标域存在3个大类,每个大类有11个小类别
-        从33个类别中抽取一个样本作为目标样本,用来控制生成的数据质量
-
-
+        每个 support_samples 条件生成 num_per_class 个样本
+        support_samples: list of (support_x, pos, cls)
+        return: dict {(pos, cls): [generated_samples]}
         """
         model.eval()
-        generated_samples = []
-        generated_labels = []
+        generated_dict = {}
 
-        # 假设 target_data 数据格式中，标签可以从 tensor 中取出唯一值（这里简单演示）
-        # 若 target_data 中不包含标签，需要另外提供目标域标签 tensor
-        for label in target_data.unique():
-            # 筛选出目标域中属于该 label 的样本
-            class_data = target_data[target_data == label]
-            if len(class_data) == 0:
-                continue
-            for _ in range(num_generated):
-                # 随机从该类别中抽取一个作为条件
-                condition = class_data[torch.randint(0, len(class_data), (1,))]
-                generated = self.reverse_process(model, condition, timesteps)
+        for support_x, pos, cls in support_samples:
+            key = (pos, cls)
+            generated_list = []
 
-                # 利用 MMD 筛选生成样本，越接近参考数据表示质量越好
-                mmd = self.mmd_loss(generated, class_data)
-                if mmd.item() < 0.3:  # MMD 阈值，可调
-                    generated_samples.append(generated)
-                    generated_labels.append(label)
+            for _ in range(num_per_class):
+                x = self.reverse_process(model, support_x, timesteps)
+                generated_list.append(x)
 
-        if len(generated_samples) == 0:
-            return None, None
-        return torch.cat(generated_samples, dim=0), torch.tensor(generated_labels).to(self.device)
+            if key not in generated_dict:
+                generated_dict[key] = []
+            generated_dict[key].extend(generated_list)
+
+        return generated_dict
+    
+    def select_top_by_mmd(self, generated_dict, support_dict, top_n=5):
+        """
+        计算 MMD 与 support 样本，选出每类前 top_n 个样本
+        support_dict: dict {(pos, cls): support_x}
+        """
+        selected_samples = []
+        selected_labels = []
+
+        for key, samples in generated_dict.items():
+            pos, cls = key
+            support_x = support_dict[key].unsqueeze(0).to(self.device)  # 用于 MMD 参考
+            samples_tensor = torch.stack(samples).to(self.device)
+
+            mmd_scores = [self.mmd_loss(x.unsqueeze(0), support_x).item() for x in samples_tensor]
+            top_indices = sorted(range(len(mmd_scores)), key=lambda i: mmd_scores[i])[:top_n]
+
+            selected = samples_tensor[top_indices]
+            selected_samples.append(selected)
+            selected_labels.extend([torch.tensor([pos, cls])] * top_n)
+
+        return torch.cat(selected_samples, dim=0), torch.stack(selected_labels).to(self.device)
     
 
     def generate_samples(self, model, target_data, num_generated=10, timesteps=50):
@@ -317,27 +328,7 @@ class train_utils(object):
             x = model(x, condition)
         return x
 
-    def train_classifier(self, classifier, augmented_data, augmented_labels, batch_size=32, epochs=10):
-        """
-        使用增强数据训练分类器
-        """
-        classifier.train()
-        dataloader = DataLoader(TensorDataset(augmented_data, augmented_labels), batch_size=batch_size, shuffle=True)
-        optimizer = optim.Adam(classifier.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
 
-        for epoch in range(epochs):
-            total_loss = 0
-            for x_batch, y_batch in dataloader:
-                x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
-                optimizer.zero_grad()
-                outputs = classifier(x_batch)
-                loss = criterion(outputs, y_batch)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-
-            print(f"[Classifier Epoch {epoch+1}/{epochs}] Loss: {total_loss/len(dataloader):.6f}")
 
     def diff_train(self):
         """
@@ -390,6 +381,20 @@ class train_utils(object):
         # 1. 记忆池（保存高准确率数据）
         memory_buffer = {"x": [], "y": []}  
         
+        # Step 1. Train DiffUNet on source
+        self.train_diff_unet(self.model, self.datasets['source_train'])
+
+        # Step 2. 条件生成候选样本
+        gen_dict = self.generate_candidates_by_condition(self.model, support_samples, num_per_class=gen_per_class)
+
+        # Step 3. 按类别筛选 top-N 质量样本
+        support_dict = {(pos, cls): x for (x, pos, cls) in support_samples}
+        gen_data, gen_labels = self.select_top_by_mmd(gen_dict, support_dict, top_n=top_n)
+
+        # Step 4. 联合源域数据训练分类器
+        source_data, source_labels = self.datasets['source_train'].tensors  # 假设是 TensorDataset
+        self.train_classifier(self.model_test, source_data, source_labels, gen_data, gen_labels)
+            
 
 
         for epoch in range(self.start_epoch, args.max_epoch):
