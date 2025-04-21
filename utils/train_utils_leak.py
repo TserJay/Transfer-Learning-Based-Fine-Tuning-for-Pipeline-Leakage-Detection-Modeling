@@ -21,7 +21,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, classificat
 
 import torch.nn.functional as F
 import datasets as datasets
-import models.Net_v2011 as models
+import models.Net_v2012 as models
 import models.Diff_UNet as Diff_UNet
 
 
@@ -135,7 +135,6 @@ class train_utils(object):
         else:
             raise Exception("optimizer not implement")
 
-
         # Define the learning rate decay
         if args.lr_scheduler == 'step':
             steps = [int(step) for step in args.steps.split(',')]
@@ -163,7 +162,6 @@ class train_utils(object):
         self.criterion = nn.CrossEntropyLoss()
         # self.criterion = nn.SoftmaxCrossEntropyLoss()
     
-
     def set_input(self, input):
         data_set = []
         for data in input:
@@ -176,13 +174,8 @@ class train_utils(object):
             self.out_signals = torch.tensor(data_set)     
         return self.out_signals
     
-    # def wd(self,input):
 
-    #   self.wd = getattr(model_wd,'WaveletGatedNet')(signal_length=1792, wavelet_name='db1',level=8)  
-      
-    #   return self.wd(input) 
     
-
     def train_diff_unet(self, model, source_data, batch_size=32, epochs=100):
         """
         使用源域数据训练 DiffUNet 模型（用于扩散生成）

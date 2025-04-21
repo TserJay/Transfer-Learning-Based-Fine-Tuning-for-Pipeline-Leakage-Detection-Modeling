@@ -25,7 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train')
 
     # model and data parameters
-    parser.add_argument('--model_name', type=str, default='Net_v2011', help='the name of the model')
+    parser.add_argument('--model_name', type=str, default='Net_v2012', help='the name of the model')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
     parser.add_argument('--transfer_task', type=list, default=[[3] , [0], [1], [2]], help='transfer learning tasks')
