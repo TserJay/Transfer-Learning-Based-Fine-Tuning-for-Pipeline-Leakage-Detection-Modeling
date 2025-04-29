@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.nn import init
 import math
 from einops import rearrange
-from torch.utils.hooks import RemovableHandle
+
 from timm.layers import DropPath
 
 import torch.nn.functional as F
@@ -15,9 +15,7 @@ import torch.nn.functional as F
 # from torchsummary import summary
 
 
-
 # 改进Bottle2neck内部结构
-
 
 
 class MLP(nn.Module):
@@ -101,100 +99,8 @@ class CoordinateAttention(nn.Module):
         # 将注意力权重应用到输入特征图上
         return x * y.expand_as(x)
     
-# class Bottle2neck(nn.Module): 
-#     expansion = 4
-
-#     def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=26, scale = 4, stype='normal'):
-#         """ Constructor
-#         Args:
-#             inplanes: input channel dimensionality
-#             planes: output channel dimensionality
-#             stride: conv stride. Replaces pooling layer.
-#             downsample: None when stride = 1
-#             baseWidth: basic width of conv3x3
-#             scale: number of scale.
-#             type: 'normal': normal set. 'stage': first block of a new stage.
-#         """
-#         super(Bottle2neck, self).__init__()
-
-#         width = int(math.floor(planes * (baseWidth/64.0)))
-#         self.conv1 = nn.Conv1d(inplanes, width*scale, kernel_size=1, bias=False)  
-#         self.bn1 = nn.BatchNorm1d(width*scale)
-#         # self.se1 = SE_Block(width*scale)
-        
-        
-#         if scale == 1:
-#           self.nums = 1
-#         else:
-#           self.nums = scale -1
-#         if stype == 'stage':
-#             self.pool = nn.AvgPool1d(kernel_size=5, stride = stride, padding=2)            
-#             # self.atten = MixedAttention(width)
-#             self.se2 = SE_Block(width)
-#             # co_atten 模块
-#             self.co_atten = CoordinateAttention (width)
-#         convs = []
-#         bns = []
-#         for i in range(self.nums):
-#           convs.append(nn.Conv1d(width, width, kernel_size=5, stride = stride, padding=2, bias=False))
-#           bns.append(nn.BatchNorm1d(width))
-
-#         self.convs = nn.ModuleList(convs)
-#         self.bns = nn.ModuleList(bns)
-
-#         self.conv3 = nn.Conv1d(width*scale, planes * self.expansion, kernel_size=1, bias=False)
-#         self.bn3 = nn.BatchNorm1d(planes * self.expansion)
-#         # self.se3 = SE_Block(planes * self.expansion)
-
-#         self.relu = nn.ReLU(inplace=True)
-#         self.downsample = downsample
-#         self.stype = stype
-#         self.scale = scale
-#         self.width  = width
-
-#     def forward(self, x):
-#         residual = x
-
-#         out = self.conv1(x)
-#         out = self.bn1(out)
-#         # out = self.se1(out)  #se模块
-     
-#         out = self.relu(out)
-
-#         spx = torch.split(out, self.width, 1)
-#         for i in range(self.nums):
-#           if i==0 or self.stype=='stage':
-#             sp = spx[i]
-#           else:
-#             sp = sp + spx[i]
-#           sp = self.convs[i](sp)
-          
-#           sp = self.relu(self.bns[i](sp))
-#           if i==0:
-#             out = sp
-#           else:
-#             out = torch.cat((out, sp), 1)
-#         if self.scale != 1 and self.stype=='normal':
-#           out = torch.cat((out, spx[self.nums]),1)
-#         elif self.scale != 1 and self.stype=='stage':
-#           out = torch.cat((out, self.pool(self.co_atten(self.se2(spx[self.nums]) )  )),1)
-#         #   out = torch.cat((out, self.atten(spx[self.nums])),1)
-         
-
-#         out = self.conv3(out)
-#         out = self.bn3(out)
-#         # out = self.se3(out)
-
-#         if self.downsample is not None:
-#             residual = self.downsample(x)
-
-#         out += residual
-#         out = self.relu(out)
-
-#         return out
 
 
-# 假设你已经定义了 SE_Block 和 CoordinateAttention
 class Bottle2neck_v200(nn.Module): 
     expansion = 4
 
@@ -315,7 +221,7 @@ class LoraLayer(nn.Module):
 
     def reset_lora_parameters(self, adapter_name):
         # 这里可以定义权重初始化的方法
-         # 获取当前适配器的 A 和 B 层
+        # 获取当前适配器的 A 和 B 层
         lora_A = self.lora_A[adapter_name]
         lora_B = self.lora_B[adapter_name]
 
@@ -350,17 +256,6 @@ class LoraLayer(nn.Module):
         return x
 
 
-    
-# class MyModel(nn.Module):
-#     def __init__(self, input_channels, in_features, out_features):
-#         super(MyModel, self).__init__()
-#         self.conv = nn.Conv2d(input_channels, 16, kernel_size=3, stride=1, padding=1)  # 示例卷积层
-#         self.lora_layer = LoraLayer(in_features, out_features)
-
-#     def forward(self, x, adapter_name):
-#         x = self.conv(x)  # 经过卷积层
-#         x = x.view(x.size(0), -1)  # 展平，准备输入到 LoraLayer
-#         return self.lora_layer(x, adapter_name)  # 调用 LoRA 层
 
 
 class FusedConvBNReLU(nn.Module):
@@ -446,7 +341,6 @@ class Res2Net(nn.Module):
         self.fused_conv_bn_relu2 = FusedConvBNReLU(self.conv2, self.bn2)
 
 
-        
         # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
         # self.shrinkage = Shrinkage(out_channels, gap_size=(1), reduction=reduction)
         # self.bn = nn.Sequential(      
@@ -569,14 +463,7 @@ class Net_v200(nn.Module):
         # def __init__(self, in_channel=3, kernel_size=3, in_embd=128, d_model=512, in_head=8, num_block=1, dropout=0.3, d_ff=128, out_c=1):
         ##################  改动！！！
 
-        '''
-        :param in_embd: embedding
-        :param d_model: embedding of transformer encoder
-        :param in_head: mutil-heat attention
-        :param dropout:
-        :param d_ff: feedforward of transformer
-        :param out_c: class_num
-        '''
+     
         super(Net_v200, self).__init__()
         
 
@@ -632,10 +519,10 @@ class Net_v200(nn.Module):
 if __name__ == '__main__':
 
     parameter1 = 32
-    x = torch.randn(parameter1, 2, 1792).to(0)
+    x = torch.randn(parameter1, 3, 1792).to(0)
     
 
-    model = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth =32, scale = 2).to(0)  # [3,4,23,3]
+    model = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth =128, scale = 2).to(0)  # [3,4,23,3]
     print(model)
     # model = model(in_channel=3, kernel_size=3, in_embd=64, d_model=112, in_head=2, num_block=1, d_ff=64, dropout=0.2, out_c=4).to(0)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

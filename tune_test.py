@@ -29,7 +29,7 @@ def parse_args():
 
     parser.add_argument('--model_Fine_name', type=str, default='Net', help='加载微调模型')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
-    parser.add_argument('--data_dir', type=str, default=r'E:\projects\UDTL-LoRA\data\leak_signals', help='the directory of the data')
+    parser.add_argument('--data_dir', type=str, default=r'D:\Transfer-Learning-Based-Fine-Tuning-for-Pipeline-Leakage-Detection-Modeling\data\leak_signals', help='the directory of the data')
     parser.add_argument('--transfer_task', type=list, default=[[3],[0], [1], [2]], help='transfer learning tasks')
     parser.add_argument('--task', type=str, default='F3-012-[1]', help='transfer learning tasks')
     parser.add_argument('--set_input', type=str, default='T F', help='nomalization type')
