@@ -21,7 +21,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, classificat
 
 import torch.nn.functional as F
 import datasets as datasets
-import models.Net_v2012 as models
+import models.Net_v220 as models
 import models.Diff_UNet as Diff_UNet
 
 
@@ -381,19 +381,19 @@ class train_utils(object):
         # 1. 记忆池（保存高准确率数据）
         memory_buffer = {"x": [], "y": []}  
         
-        # Step 1. Train DiffUNet on source
-        self.train_diff_unet(self.model, self.datasets['source_train'])
+        # # Step 1. Train DiffUNet on source
+        # self.train_diff_unet(self.model, self.datasets['source_train'])
 
-        # Step 2. 条件生成候选样本
-        gen_dict = self.generate_candidates_by_condition(self.model, support_samples, num_per_class=gen_per_class)
+        # # Step 2. 条件生成候选样本
+        # gen_dict = self.generate_candidates_by_condition(self.model, support_samples, num_per_class=gen_per_class)
 
-        # Step 3. 按类别筛选 top-N 质量样本
-        support_dict = {(pos, cls): x for (x, pos, cls) in support_samples}
-        gen_data, gen_labels = self.select_top_by_mmd(gen_dict, support_dict, top_n=top_n)
+        # # Step 3. 按类别筛选 top-N 质量样本
+        # support_dict = {(pos, cls): x for (x, pos, cls) in support_samples}
+        # gen_data, gen_labels = self.select_top_by_mmd(gen_dict, support_dict, top_n=top_n)
 
-        # Step 4. 联合源域数据训练分类器
-        source_data, source_labels = self.datasets['source_train'].tensors  # 假设是 TensorDataset
-        self.train_classifier(self.model_test, source_data, source_labels, gen_data, gen_labels)
+        # # Step 4. 联合源域数据训练分类器
+        # source_data, source_labels = self.datasets['source_train'].tensors  # 假设是 TensorDataset
+        # self.train_classifier(self.model_test, source_data, source_labels, gen_data, gen_labels)
             
 
 

@@ -4,7 +4,7 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.nn import init
 import math
-from einops import rearrange
+# from einops import rearrange
 from torch.utils.hooks import RemovableHandle
 from timm.layers import DropPath
 
@@ -12,8 +12,10 @@ from timm.layers import DropPath
 
 
 import torch.nn.functional as F
-from linformer import Linformer
+# from linformer import Linformer
 from performer_pytorch import Performer
+
+from linformer_pytorch import Linformer
 
 # from models.embed import DepthwiseSeparableConv1d, DataEmbedding, MLP
 # import summary

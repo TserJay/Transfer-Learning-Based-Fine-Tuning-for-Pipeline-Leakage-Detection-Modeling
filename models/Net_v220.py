@@ -4,8 +4,8 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.nn import init
 import math
-# from einops import rearrange
-from torch.utils.hooks import RemovableHandle
+from einops import rearrange
+
 from timm.layers import DropPath
 
 import torch.nn.functional as F
@@ -15,10 +15,7 @@ import torch.nn.functional as F
 # from torchsummary import summary
 
 
-
 # 改进Bottle2neck内部结构
-# 改进整体主干结构，拆分LSTM,并进行多尺度特征融合
-
 
 
 class MLP(nn.Module):
@@ -104,7 +101,6 @@ class CoordinateAttention(nn.Module):
     
 
 
-# 假设你已经定义了 SE_Block 和 CoordinateAttention
 class Bottle2neck_v200(nn.Module): 
     expansion = 4
 
@@ -225,7 +221,7 @@ class LoraLayer(nn.Module):
 
     def reset_lora_parameters(self, adapter_name):
         # 这里可以定义权重初始化的方法
-         # 获取当前适配器的 A 和 B 层
+        # 获取当前适配器的 A 和 B 层
         lora_A = self.lora_A[adapter_name]
         lora_B = self.lora_B[adapter_name]
 
@@ -261,6 +257,7 @@ class LoraLayer(nn.Module):
 
 
 
+
 class FusedConvBNReLU(nn.Module):
     def __init__(self, conv, bn):
         super().__init__()
@@ -282,116 +279,112 @@ class LayerNormLSTM(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_size * (2 if bidirectional else 1))  # 归一化 LSTM 输出
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)
         x, _ = self.lstm(x)
         x = self.layer_norm(x)  # 对 LSTM 输出归一化
-        y = x.permute(0, 2, 1)
-        return x, y
+        return x
     
-class MultiScaleTransformerFusion(nn.Module):
-    def __init__(self, input_dims, d_model=64, nhead=2, num_layers=1, dim_feedforward=128, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.projections = nn.ModuleList([
-            nn.Linear(in_dim, d_model) for in_dim in input_dims
-        ])
+class LSTMStackFusion(nn.Module):
+    def __init__(self, dims, out_dim=64):
+        super(LSTMStackFusion, self).__init__()
+        self.reduces = nn.ModuleList()
+        for dim in dims:
+            if dim != out_dim:
+                self.reduces.append(nn.Linear(dim, out_dim))
+            else:
+                self.reduces.append(nn.Identity())
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout, batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        self.fusion_attn = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(d_model // 2, 1)  # 用于打分
+        self.attn_fc = nn.Sequential(
+            nn.Linear(out_dim, 32),
+            nn.Tanh(),
+            nn.Linear(32, 1)
         )
 
-        self.fusion_fc = nn.Linear(d_model, d_model)
+    def resize_time(self, x, target_len):
+        # x: [T, B, C]
+        return F.interpolate(x.permute(1, 2, 0), size=target_len, mode='linear', align_corners=True).permute(2, 0, 1)
 
     def forward(self, features):
-        """
-        features: list[Tensor], 每个 Tensor 形状为 [B, T_i, C_i]
-        """
-        batch_size = features[0].shape[0]
-        proj_feats, lengths = [], []
+        # features: list of [T, B, C]
+        min_len = min([x.shape[0] for x in features])
 
-        for x, proj in zip(features, self.projections):
-            B, T, C = x.shape
-            x_proj = proj(x)  # → [B, T, d_model]
-            proj_feats.append(x_proj)
-            lengths.append(T)
+        resized = []
+        for i, x in enumerate(features):
+            x = self.resize_time(x, min_len)  # [T, B, C]
+            x = self.reduces[i](x)            # [T, B, out_dim]
+            resized.append(x)
 
-        max_len = max(lengths)
-        padded_feats, masks = [], []
-
-        for x, l in zip(proj_feats, lengths):
-            pad_len = max_len - l
-            if pad_len > 0:
-                x = F.pad(x, (0, 0, 0, pad_len))  # Pad 时间维
-            padded_feats.append(x)
-
-            mask = torch.zeros((batch_size, max_len), dtype=torch.bool, device=x.device)
-            mask[:, l:] = True
-            masks.append(mask)
-
-        all_feats = torch.stack(padded_feats, dim=1)  # [B, N, T, d_model]
-        all_masks = torch.stack(masks, dim=1)         # [B, N, T]
-
-        B, N, T, C = all_feats.shape
-        out_list = []
-
-        for i in range(N):
-            out_i = self.transformer(all_feats[:, i], src_key_padding_mask=all_masks[:, i])
-            cls_token = out_i[:, 0]  # 取每个分支的第一个位置（或平均也可）
-            out_list.append(cls_token)  # [B, d_model]
-
-        feats = torch.stack(out_list, dim=1)  # [B, N, d_model]
-
-        # 多样化融合：加权平均
-        weights = self.fusion_attn(feats).squeeze(-1)  # [B, N]
-        attn_weights = torch.softmax(weights, dim=1)   # [B, N]
-        fused = torch.sum(feats * attn_weights.unsqueeze(-1), dim=1)  # [B, d_model]
-
-        fused = self.fusion_fc(fused)  # [B, d_model]
+        x_stack = torch.stack(resized, dim=0)              # [N, T, B, C]
+        attn_weights = self.attn_fc(x_stack).softmax(dim=0)  # [N, T, B, 1]
+        fused = (attn_weights * x_stack).sum(dim=0)        # [T, B, C]
         return fused
 
 
 class Res2Net(nn.Module):
 
-    def __init__(self, block, layers, baseWidth=26, scale=2):
+    def __init__(self, block, layers, baseWidth = 26, scale = 2):
         self.inplanes = 64
         super(Res2Net, self).__init__()
         self.baseWidth = baseWidth
         self.scale = scale
 
-        self.conv1 = nn.Conv1d(3, 64, kernel_size=7, stride=2, padding=4, bias=False)
+        self.conv1 = nn.Conv1d(3, 64, kernel_size=7 , stride=2, padding=4,  #self.conv1 = nn.Conv1d(3, 64, kernel_size=7 , stride=2, padding=3,  
+                               bias=False)
         self.bn1 = nn.BatchNorm1d(64)
+
+        self.conv2 = nn.Conv1d(3, 32, kernel_size=7 , stride=2, padding=4, bias=False)
+        self.bn2 = nn.BatchNorm1d(32)
+
         self.relu = nn.ReLU(inplace=True)
+
+        # 初始化
         self.fused_conv_bn_relu1 = FusedConvBNReLU(self.conv1, self.bn1)
+        self.fused_conv_bn_relu2 = FusedConvBNReLU(self.conv2, self.bn2)
 
+
+        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+        # self.shrinkage = Shrinkage(out_channels, gap_size=(1), reduction=reduction)
+        # self.bn = nn.Sequential(      
+        #     nn.BatchNorm1d(256 * block.expansion),
+        #     nn.ReLU(inplace=True),
+        #     self.shrinkage #特征缩减  
+        # )
         self.layer1 = self._make_layer(block, 64, layers[0])
+        self.BiLSTM1 = LayerNormLSTM(897,448)
+
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 8, layers[3], stride=2)
-
-        # 拆分的 LSTM 层，全部输出为64
-        self.BiLSTM1 = LayerNormLSTM(256, 128)
-        self.BiLSTM2 = LayerNormLSTM(512, 256)
-        self.BiLSTM3 = LayerNormLSTM(256, 128)
-        self.BiLSTM4 = LayerNormLSTM(32, 56)
-
-        self.fusion_module = MultiScaleTransformerFusion(
-            input_dims=[256, 512, 256, 112],  # 你4个分支的C
-            d_model=64,
-            nhead=2,
-            num_layers=1
-        )
-
+        self.BiLSTM2 = LayerNormLSTM(448,224)
       
+        self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
+        self.BiLSTM3 = LayerNormLSTM(224,112)
+    
+        self.layer4 = self._make_layer(block, 8, layers[3], stride=2)
+        self.BiLSTM4 = LayerNormLSTM(112,64)
 
+        
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+     
+
+
+
+        self.LoraLayer_1 = LoraLayer(897,897)
+        self.LoraLayer_1.update_layer('adapter1', r=4  , lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
+       
+
+        self.LoraLayer_2 = LoraLayer(897,896)
+        self.LoraLayer_2.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
+        self.lora_fc_2 = nn.Linear(64,256)
+
+        self.LoraLayer_3 = LoraLayer(897,448)
+        self.LoraLayer_3.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
+        self.lora_fc_3 = nn.Linear(64,512)
+
+        self.LoraLayer_4 = LoraLayer(897,224)
+        self.LoraLayer_4.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
+        self.lora_fc_4 = nn.Linear(64,256)
+
+        self.LoraLayer_5 = LoraLayer(897,128)
+        self.LoraLayer_5.update_layer('adapter1', r=4, lora_alpha=0.1, lora_dropout=0.5, init_lora_weights=True)
+        #self.lora_fc_4 = nn.Linear(64,256)
 
 
         for m in self.modules():
@@ -408,73 +401,107 @@ class Res2Net(nn.Module):
                 nn.Conv1d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm1d(planes * block.expansion),
-            )
+            )   # 检查是否进行下采样操作
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample=downsample,
-                             stype='stage', baseWidth=self.baseWidth, scale=self.scale))
+        layers.append(block(self.inplanes, planes, stride, downsample=downsample, 
+                        stype='stage', baseWidth = self.baseWidth, scale=self.scale))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, baseWidth=self.baseWidth, scale=self.scale))
+            layers.append(block(self.inplanes, planes, baseWidth = self.baseWidth, scale=self.scale))
 
         return nn.Sequential(*layers)
-
-    def forward(self, x):
-        # [32, 3, 1792]
-
-        x = self.fused_conv_bn_relu1(x) 
     
-        x = self.layer1(x) # [32, 256, 897]
-        x1, x = self.BiLSTM1(x)  # x: [32, 256, 897] x1:[32, 897, 256]
+    def forward(self, x, adapter_name):
+        y = x
         
-        x = self.layer2(x)  # [32, 512, 449]
-        x2, x = self.BiLSTM2(x)  # x: [32, 512, 449] x2:[32, 449, 512]
-       
-
-        x = self.layer3(x)
-        x3, x = self.BiLSTM3(x)  # x: [32, 256, 225] x3:[32, 225, 256]
+        x = self.fused_conv_bn_relu1(x)  # 融合 Conv + BN + ReLU
+        y = self.fused_conv_bn_relu2(y)
  
-       
+        lora_outputs = [
+            self.LoraLayer_1(x, adapter_name),
+            self.LoraLayer_2(x, adapter_name),
+            self.LoraLayer_3(x, adapter_name),
+            self.LoraLayer_4(x, adapter_name),
+            self.LoraLayer_5(y, adapter_name),
+            ]         # 计算 LoraLayer 并缓存结果
+
+        # 融合点1
+        x = x + lora_outputs[0]
+        x = self.layer1(x)
+        x = self.BiLSTM1(x)
+
+        # 融合点2
+        lora_fc_out_2 = self.lora_fc_2(lora_outputs[1].reshape(-1, 64)).reshape(64, 256, 896)
+        x = x + lora_fc_out_2
+        x = self.layer2(x)
+        x = self.BiLSTM2(x)
+
+        # 融合点3
+        lora_fc_out_3 = self.lora_fc_3(lora_outputs[2].reshape(-1, 64)).reshape(64, 512, 448)
+        x = x + lora_fc_out_3
+        x = self.layer3(x)
+        x = self.BiLSTM3(x)
+
+        # 融合点4  
+        lora_fc_out_4 = self.lora_fc_4(lora_outputs[3].reshape(-1, 64)).reshape(64, 256, 224)
+        x = x + lora_fc_out_4
         x = self.layer4(x)
-        x4, x = self.BiLSTM4(x)  # x: [32,32,113] x4: [32, 113, 112]
-   
+        x = self.BiLSTM4(x.permute(1, 0, 2))
 
 
-        fused = self.fusion_module([x1, x2, x3, x4])  # [B, d_model]
+        # pos = self.fc1(x)
+        # cls = self.fc2(x)
+
+        y = lora_outputs[4]
+        # print(y.shape)
+        # print(x.shape)
+
+        return x,y
 
 
-        # # Attention 融合
-        # fused = self.lstm_fusion([x1, x2, x3, x4])  # [T, B, 64]
-
-        return fused
-
-
-class Net_v2011(nn.Module):
-    def __init__(self, in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
-        super(Net_v2011, self).__init__()
-        self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth=128, scale=2)
-        self.ap = nn.AdaptiveAvgPool1d(output_size=1)
-        self.projetion_pos_1 = MLP(input_dim=64, hidden_dim=32, output_dim=32, num_layers=1)
-        self.fc1 = nn.Linear(32, 12)
-
-    def forward(self, x):
-        x = self.backbone(x)  # 输出为 BCT[32,32,113]
-        # print(x.shape)  [32,256]
-        # x = self.ap(x).squeeze(-1)  # [32, 32]
+class Net_v220(nn.Module): 
+    def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
+        super(Net_v220, self).__init__()
         
-        view = self.projetion_pos_1(x)
-        pos = self.fc1(view)
-        return pos, view
+        self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
+      
 
+        self.ap = nn.AdaptiveAvgPool1d(output_size=1)
+
+        self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=32, num_layers=1)
+        # self.projetion_pos_2 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1)
+        self.projetion_cls = MLP(input_dim=113, hidden_dim=64, output_dim=4, num_layers=1)
+
+        self.fc1 = nn.Linear(32 , 12)  # 
+        # self.fc2 = nn.Linear(128 , 4)
+        self.fc_lora =nn.Linear(64,32)
+        
+
+
+    def forward(self, x ):
+
+        # x = self.backbone1(x)
+        x,y = self.backbone(x,'adapter1')  #[32, 128, 113]  源域分支
+        y = y.permute(1,0,2)
+           
+        x = x+y   # 绕过4层DPN网络
+        x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
+        view = self.projetion_pos_1(x_1)  #孔径位置信息
+        pos = self.fc1(view)
+        # print(pos.shape)
+	
+
+        return pos,view
 
 
 if __name__ == '__main__':
 
     parameter1 = 32
-    x = torch.randn(parameter1, 2, 1792).to(0)
+    x = torch.randn(parameter1, 3, 1792).to(0)
     
 
-    model = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth =32, scale = 2).to(0)  # [3,4,23,3]
+    model = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth =128, scale = 2).to(0)  # [3,4,23,3]
     print(model)
     # model = model(in_channel=3, kernel_size=3, in_embd=64, d_model=112, in_head=2, num_block=1, d_ff=64, dropout=0.2, out_c=4).to(0)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
