@@ -368,7 +368,7 @@ class train_utils(object):
     def train(self):
         """
         Training process
-        :return:
+        :return: 
         """
         args = self.args
 
@@ -378,9 +378,7 @@ class train_utils(object):
         best_acc_pos = 0.0
         step_start = time.time()
 
-        # 1. 记忆池（保存高准确率数据）
-        memory_buffer = {"x": [], "y": []}  
-        
+    
         # Step 1. Train DiffUNet on source
         self.train_diff_unet(self.model, self.datasets['source_train'])
 
