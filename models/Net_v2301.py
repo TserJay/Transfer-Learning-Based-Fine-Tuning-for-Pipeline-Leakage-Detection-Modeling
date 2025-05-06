@@ -14,8 +14,14 @@ import torch.nn.functional as F
 # import summary
 # from torchsummary import summary
 
-
+# 基础版本 v200
 # 改进Bottle2neck内部结构
+# 使用动态senet替换senet
+
+# 替换原有SE_Block为动态版本
+
+
+
 
 
 class MLP(nn.Module):
@@ -57,6 +63,20 @@ class SE_Block(nn.Module):
             # Fscale操作：将得到的权重乘以原来的特征图x
             return x * y.expand_as(x)
     
+
+class DynamicSE(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.fc1 = nn.Conv1d(channels, channels//reduction, 1)
+        self.fc2 = nn.Conv1d(channels//reduction, channels*2, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        w = self.avg_pool(x)
+        w = self.fc1(w)
+        gamma, beta = torch.chunk(self.fc2(w), 2, dim=1)
+        return x * self.sigmoid(gamma) + beta  # 动态缩放+平移
 # co-atten
 class CoordinateAttention(nn.Module):
     def __init__(self, inchannel, reduction_ratio=16):
@@ -121,6 +141,7 @@ class Bottle2neck_v200(nn.Module):
         if stype == 'stage':
             self.pool = nn.AvgPool1d(kernel_size=5, stride=stride, padding=2)            
             self.se2 = SE_Block(width)
+            self.Dy_se2 = DynamicSE(width)
             self.co_atten = CoordinateAttention(width)
 
         convs = []
@@ -170,7 +191,7 @@ class Bottle2neck_v200(nn.Module):
         if self.scale != 1 and self.stype == 'normal':
             out = torch.cat((out, spx[self.nums]), 1)
         elif self.scale != 1 and self.stype == 'stage':
-            attention_input = self.se2(spx[self.nums])
+            attention_input = self.Dy_se2(spx[self.nums])
             attention_input = self.co_atten(attention_input)
             # 动态门控制，减弱注意力的权重
             gate = torch.sigmoid(attention_input.mean(dim=-1, keepdim=True))  # (B, C, 1)
@@ -455,9 +476,9 @@ class Res2Net(nn.Module):
         return x,y
 
 
-class Net_v200(nn.Module): 
+class Net_v2301(nn.Module): 
     def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
-        super(Net_v200, self).__init__()
+        super(Net_v2301, self).__init__()
     
         self.backbone = Res2Net(Bottle2neck_v200, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
      

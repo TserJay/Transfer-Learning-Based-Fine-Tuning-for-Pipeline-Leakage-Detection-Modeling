@@ -25,7 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train')
 
     # model and data parameters
-    parser.add_argument('--model_name', type=str, default='Net_v220', help='the name of the model')
+    parser.add_argument('--model_name', type=str, default='Net_v2301', help='the name of the model')
     parser.add_argument('--data_name', type=str, default='leak_signals', help='the name of the data')
     parser.add_argument('--data_dir', type=str, default=r'D:\Transfer-Learning-Based-Fine-Tuning-for-Pipeline-Leakage-Detection-Modeling\data\leak_signals', help='the directory of the data')
     parser.add_argument('--transfer_task', type=list, default=[[3] , [0], [1], [2]], help='transfer learning tasks')
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument('--cuda_device', type=str, default='0', help='assign device')
     parser.add_argument('--checkpoint_dir', type=str, default='.\checkpoint_adabn', help='the directory to save the model')
     parser.add_argument("--pretrained", type=bool, default=False, help='whether to load the pretrained model')
-    parser.add_argument('--batch_size', type=int, default=64, help='batchsize of the training process')
+    parser.add_argument('--batch_size', type=int, default=32, help='batchsize of the training process')
     parser.add_argument('--num_workers', type=int, default=0, help='the number of training process')
     parser.add_argument('--source_num_classes', type=int, default=12, help='源域泄露孔径位置类别')
     parser.add_argument('--target_num_classes', type=int, default=12, help='目标域泄露孔径位置数目')
@@ -56,12 +56,12 @@ def parse_args():
 
     # optimization information
     parser.add_argument('--opt', type=str, choices=['sgd', 'adam'], default='adam', help='the optimizer')
-    parser.add_argument('--lr', type=float, default=1e-2, help='the initial learning rate')
+    parser.add_argument('--lr', type=float, default=1e-3, help='the initial learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, help='the momentum for sgd')
     parser.add_argument('--weight-decay', type=float, default=1e-5, help='the weight decay')
-    parser.add_argument('--lr_scheduler', type=str, choices=['step', 'exp', 'stepLR', 'fix'], default='step', help='the learning rate schedule')
+    parser.add_argument('--lr_scheduler', type=str, choices=['step', 'exp', 'stepLR', 'fix'], default='stepLR', help='the learning rate schedule')
     parser.add_argument('--gamma', type=float, default=0.66 , help='learning rate scheduler parameter for step and exp')
-    parser.add_argument('--steps', type=str, default='100, 150', help='the learning rate decay for step and stepLR')
+    parser.add_argument('--steps', type=str, default='50', help='the learning rate decay for step and stepLR')
 
 
     args = parser.parse_args() 
