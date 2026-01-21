@@ -1,10 +1,9 @@
-# TL_Tune
 
-《基于迁移学习微调的管道泄漏检测模型》
+**"Pipeline Leak Detection Model Based on Transfer Learning Fine-tuning"**
 
-
-基于扩散生成和迁移微调的管道泄漏检测模型
-
+**Pipeline leak detection model based on diffusion generation and transfer fine-tuning**
+**
+A general framework for fault diagnosis, signal detection, and migration, awaiting updates**
 
 
 
