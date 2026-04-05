@@ -25,7 +25,7 @@ from collections import OrderedDict
 from sklearn.preprocessing import MultiLabelBinarizer
 
 
-import models.Net as model_test
+import models.LORA_Net_12345 as model_test
 from itertools import cycle  # 让 target batch 轮流使用
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
@@ -306,7 +306,13 @@ class tune_utils(object):
 
             model_tune = MMDModel(base_model, num_classes=args.Fine_num_classes).to(self.device)
             # 冻结部分层的参数
-            layers_to_freeze = [#model_tune.feature_extractor.backbone.conv1, model_tune.feature_extractor.backbone.bn1,model_tune.feature_extractor.backbone.relu,
+            layers_to_freeze = [
+                model_tune.feature_extractor.backbone,
+                model_tune.feature_extractor.BiLSTM1,
+                model_tune.feature_extractor.ap,
+                model_tune.feature_extractor.projetion_pos_1,
+                model_tune.feature_extractor.fc_lora
+                                # model_tune.feature_extractor.backbone.conv1, model_tune.feature_extractor.backbone.bn1,model_tune.feature_extractor.backbone.relu,
                                 
                                 # model_tune.feature_extractor.backbone.layer1,model_tune.feature_extractor.backbone.BiLSTM1,
                                 # model_tune.feature_extractor.backbone.layer2,model_tune.feature_extractor.backbone.BiLSTM2,
@@ -504,7 +510,7 @@ class tune_utils(object):
                     
             
                     
-                    #torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
+                    torch.save(model_tune.state_dict(),os.path.join(self.save_dir,'{}-fine_tuned_{}_{}.pth'.format(epoch+1, acc_pos, Fine_number)))
                 
                 if epoch == num_epochs-1:
                     Fine_acc_pos = Fine_acc_pos/10
