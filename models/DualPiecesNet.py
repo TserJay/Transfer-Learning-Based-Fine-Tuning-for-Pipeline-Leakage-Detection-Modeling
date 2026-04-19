@@ -1,103 +1,88 @@
+import math
 
 import torch
-from torch import nn, optim
+from torch import nn
 import torch.nn.functional as F
-from torch.nn import init
-import math
-from einops import rearrange
 
-# from models.embed import DepthwiseSeparableConv1d, DataEmbedding, MLP
 
-# import summary
-# from torchsummary import summary
+def _as_tuple(values, expected_length, name):
+    if len(values) != expected_length:
+        raise ValueError(f"{name} must contain {expected_length} values, got {len(values)}")
+    return tuple(values)
 
 
 class MLP(nn.Module):
-    """ Very simple multi-layer perceptron (also called FFN)   多层感知器FFN"""
+    """Simple multi-layer perceptron used by the prediction heads."""
 
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
         super().__init__()
         self.num_layers = num_layers
-        h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+        hidden_dims = [hidden_dim] * (num_layers - 1)
+        dims = [input_dim] + hidden_dims + [output_dim]
+        self.layers = nn.ModuleList(
+            nn.Linear(in_dim, out_dim) for in_dim, out_dim in zip(dims[:-1], dims[1:])
+        )
 
     def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        for index, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if index < self.num_layers - 1 else layer(x)
         return x
 
 
-  
-    
-#全局平均池化+1*1卷积核+ReLu+1*1卷积核+Sigmoid
 class SE_Block(nn.Module):
     def __init__(self, inchannel, ratio=16):
-        super(SE_Block, self).__init__()
-        # 全局平均池化(Fsq操作)
+        super().__init__()
+        reduced_channels = max(1, inchannel // ratio)
         self.gap = nn.AdaptiveAvgPool1d(1)
-        # 两个全连接层(Fex操作)
         self.fc = nn.Sequential(
-            nn.Linear(inchannel, inchannel // ratio, bias=False),  # 从 c -> c/r
-            nn.ReLU(),
-            nn.Linear(inchannel // ratio, inchannel, bias=False),  # 从 c/r -> c
-            nn.Sigmoid()
+            nn.Linear(inchannel, reduced_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced_channels, inchannel, bias=False),
+            nn.Sigmoid(),
         )
- 
+
     def forward(self, x):
-            # 读取批数据图片数量及通道数
-            b, c, h = x.size()
-            # Fsq操作：经池化后输出b*c的矩阵
-            y = self.gap(x).view(b, c)
-            # Fex操作：经全连接层输出（b，c，1，1）矩阵
-            y = self.fc(y).view(b, c, 1)
-
-            
-            # Fscale操作：将得到的权重乘以原来的特征图x
-            return x * y.expand_as(x)
-
-
+        batch_size, channels, _ = x.size()
+        y = self.gap(x).view(batch_size, channels)
+        y = self.fc(y).view(batch_size, channels, 1)
+        return x * y.expand_as(x)
 
 
 class Bottle2neck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, baseWidth=26, scale = 4, stype='normal'):
-        """ Constructor
-        Args:
-            inplanes: input channel dimensionality
-            planes: output channel dimensionality
-            stride: conv stride. Replaces pooling layer.
-            downsample: None when stride = 1
-            baseWidth: basic width of conv3x3
-            scale: number of scale.
-            type: 'normal': normal set. 'stage': first block of a new stage.
-        """
-        super(Bottle2neck, self).__init__()
+    def __init__(
+        self,
+        inplanes,
+        planes,
+        stride=1,
+        downsample=None,
+        baseWidth=26,
+        scale=4,
+        stype='normal',
+        kernel_size=5,
+    ):
+        super().__init__()
 
-        width = int(math.floor(planes * (baseWidth/64.0)))
-        self.conv1 = nn.Conv1d(inplanes, width*scale, kernel_size=1, bias=False)  
-        self.bn1 = nn.BatchNorm1d(width*scale)
-        self.se1 = SE_Block(width*scale)
-        
-        
-        if scale == 1:
-          self.nums = 1
-        else:
-          self.nums = scale -1
+        width = int(math.floor(planes * (baseWidth / 64.0)))
+        padding = kernel_size // 2
+
+        self.conv1 = nn.Conv1d(inplanes, width * scale, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(width * scale)
+        self.se1 = SE_Block(width * scale)
+
+        self.nums = 1 if scale == 1 else scale - 1
         if stype == 'stage':
-            self.pool = nn.AvgPool1d(kernel_size=5, stride = stride, padding=2)            
-            # self.atten = MixedAttention(width)
+            self.pool = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=padding)
             self.se2 = SE_Block(width)
-        convs = []
-        bns = []
-        for i in range(self.nums):
-          convs.append(nn.Conv1d(width, width, kernel_size=5, stride = stride, padding=2, bias=False))
-          bns.append(nn.BatchNorm1d(width))
 
-        self.convs = nn.ModuleList(convs)
-        self.bns = nn.ModuleList(bns)
+        self.convs = nn.ModuleList(
+            nn.Conv1d(width, width, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+            for _ in range(self.nums)
+        )
+        self.bns = nn.ModuleList(nn.BatchNorm1d(width) for _ in range(self.nums))
 
-        self.conv3 = nn.Conv1d(width*scale, planes * self.expansion, kernel_size=1, bias=False)
+        self.conv3 = nn.Conv1d(width * scale, planes * self.expansion, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm1d(planes * self.expansion)
         self.se3 = SE_Block(planes * self.expansion)
 
@@ -105,148 +90,144 @@ class Bottle2neck(nn.Module):
         self.downsample = downsample
         self.stype = stype
         self.scale = scale
-        self.width  = width
+        self.width = width
 
     def forward(self, x):
         residual = x
 
         out = self.conv1(x)
         out = self.bn1(out)
-        # out = self.se1(out)  #se模块
-     
         out = self.relu(out)
 
         spx = torch.split(out, self.width, 1)
         for i in range(self.nums):
-          if i==0 or self.stype=='stage':
-            sp = spx[i]
-          else:
-            sp = sp + spx[i]
-          sp = self.convs[i](sp)
-          
-          sp = self.relu(self.bns[i](sp))
-          if i==0:
-            out = sp
-          else:
-            out = torch.cat((out, sp), 1)
-        if self.scale != 1 and self.stype=='normal':
-          out = torch.cat((out, spx[self.nums]),1)
-        elif self.scale != 1 and self.stype=='stage':
-          out = torch.cat((out, self.pool(self.se2(spx[self.nums]))),1)
-        #   out = torch.cat((out, self.atten(spx[self.nums])),1)
-         
+            if i == 0 or self.stype == 'stage':
+                sp = spx[i]
+            else:
+                sp = sp + spx[i]
+
+            sp = self.convs[i](sp)
+            sp = self.relu(self.bns[i](sp))
+            out = sp if i == 0 else torch.cat((out, sp), 1)
+
+        if self.scale != 1 and self.stype == 'normal':
+            out = torch.cat((out, spx[self.nums]), 1)
+        elif self.scale != 1 and self.stype == 'stage':
+            out = torch.cat((out, self.pool(self.se2(spx[self.nums]))), 1)
 
         out = self.conv3(out)
         out = self.bn3(out)
-        # out = self.se3(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
 
         out += residual
         out = self.relu(out)
-
         return out
 
-class Res2Net(nn.Module):
 
-    def __init__(self, block, layers, baseWidth = 26, scale = 2, num_classes=1000):
-        self.inplanes = 64
-        super(Res2Net, self).__init__()
+class Res2Net(nn.Module):
+    def __init__(
+        self,
+        block,
+        layers,
+        input_channels=3,
+        stem_channels=64,
+        stage_planes=(64, 128, 64, 8),
+        baseWidth=26,
+        scale=2,
+        lstm_input_sizes=(897, 448, 224),
+        lstm_hidden_sizes=(448, 224, 112),
+        dropout=0,
+    ):
+        super().__init__()
+        self.inplanes = stem_channels
         self.baseWidth = baseWidth
         self.scale = scale
+        self.stage_planes = _as_tuple(stage_planes, 4, "stage_planes")
+        self.lstm_input_sizes = _as_tuple(lstm_input_sizes, 3, "lstm_input_sizes")
+        self.lstm_hidden_sizes = _as_tuple(lstm_hidden_sizes, 3, "lstm_hidden_sizes")
 
-        self.conv1 = nn.Conv1d(3, 64, kernel_size=3 , stride=2, padding=2,  #self.conv1 = nn.Conv1d(3, 64, kernel_size=7 , stride=2, padding=3,  
-                               bias=False)
-        
-        self.bn1 = nn.BatchNorm1d(64)
+        self.conv1 = nn.Conv1d(
+            input_channels,
+            stem_channels,
+            kernel_size=3,
+            stride=2,
+            padding=2,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm1d(stem_channels)
         self.relu = nn.ReLU(inplace=True)
-        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
 
+        self.layer1 = self._make_layer(block, self.stage_planes[0], layers[0])
+        self.BiLSTM1 = nn.LSTM(
+            input_size=self.lstm_input_sizes[0],
+            hidden_size=self.lstm_hidden_sizes[0],
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout,
+        )
+        self.layer2 = self._make_layer(block, self.stage_planes[1], layers[1], stride=2)
+        self.BiLSTM2 = nn.LSTM(
+            input_size=self.lstm_input_sizes[1],
+            hidden_size=self.lstm_hidden_sizes[1],
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout,
+        )
+        self.layer3 = self._make_layer(block, self.stage_planes[2], layers[2], stride=2)
+        self.BiLSTM3 = nn.LSTM(
+            input_size=self.lstm_input_sizes[2],
+            hidden_size=self.lstm_hidden_sizes[2],
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout,
+        )
+        self.layer4 = self._make_layer(block, self.stage_planes[3], layers[3], stride=2)
 
-        # self.shrinkage = Shrinkage(out_channels, gap_size=(1), reduction=reduction)
-
-
-        # self.bn = nn.Sequential(
-            
-        #     nn.BatchNorm1d(256 * block.expansion),
-        #     nn.ReLU(inplace=True),
-        #     self.shrinkage #特征缩减
-          
-        # )
-
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.BiLSTM1 = nn.LSTM(input_size=897,
-                               hidden_size=448,
-                               num_layers=1,
-                               batch_first=True,
-                               bidirectional=True,
-                               dropout=0)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.BiLSTM2 = nn.LSTM(input_size=448,
-                               hidden_size=224,
-                               num_layers=1,
-                               batch_first=True,
-                               bidirectional=True,
-                               dropout=0)
-        self.layer3 = self._make_layer(block, 64, layers[2], stride=2)
-        self.BiLSTM3 = nn.LSTM(input_size=224,
-                               hidden_size=112,
-                               num_layers=1,
-                               batch_first=True,
-                               bidirectional=True,
-                               dropout=0)
-        self.layer4 = self._make_layer(block, 8, layers[3], stride=2)
-        
-
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        # self.fc = nn.Linear(256 * block.expansion, 112)
-        # self.fc1 = nn.Linear(512 * block.expansion, 12)
-        # self.fc2 = nn.Linear(512 * block.expansion, 4)
-        
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        for module in self.modules():
+            if isinstance(module, nn.Conv1d):
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(module, nn.BatchNorm1d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.Conv1d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm1d(planes * block.expansion),
-            )   # 检查是否进行下采样操作
+            )
 
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample=downsample, 
-                        stype='stage', baseWidth = self.baseWidth, scale=self.scale))
+        layers = [
+            block(
+                self.inplanes,
+                planes,
+                stride,
+                downsample=downsample,
+                stype='stage',
+                baseWidth=self.baseWidth,
+                scale=self.scale,
+            )
+        ]
         self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, baseWidth = self.baseWidth, scale=self.scale))
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, baseWidth=self.baseWidth, scale=self.scale))
 
         return nn.Sequential(*layers)
-    
- 
-
 
     def forward(self, x):
-
-        # print(x.shape)
-         
         x = self.conv1(x)
-
         x = self.bn1(x)
         x = self.relu(x)
 
-        
-    
         x = self.layer1(x)
         x, _ = self.BiLSTM1(x)
-       
+
         x = self.layer2(x)
         x, _ = self.BiLSTM2(x)
 
@@ -254,202 +235,136 @@ class Res2Net(nn.Module):
         x, _ = self.BiLSTM3(x)
 
         x = self.layer4(x)
-
-
-        
-
-
-        # x = self.avgpool(x)
-        # x = x.view(x.size(0), -1)
-        # print(x.shape)
-        # x = self.fc(x)
-        # print(x.shape)
-        
-        # pos = self.fc1(x)
-        # cls = self.fc2(x)
-
         return x
 
 
+class DualPiecesHead(nn.Module):
+    def __init__(
+        self,
+        sequence_input_size=112,
+        sequence_hidden_size=64,
+        position_hidden_dim=64,
+        position_classes=12,
+        class_input_dim=113,
+        class_hidden_dim=64,
+        class_classes=4,
+        dropout=0,
+    ):
+        super().__init__()
+        self.sequence_encoder = nn.LSTM(
+            input_size=sequence_input_size,
+            hidden_size=sequence_hidden_size,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout,
+        )
+        self.pool = nn.AdaptiveAvgPool1d(output_size=1)
+        self.position_projection = MLP(
+            input_dim=sequence_hidden_size * 2,
+            hidden_dim=position_hidden_dim,
+            output_dim=position_classes,
+            num_layers=1,
+        )
+        self.class_projection = MLP(
+            input_dim=class_input_dim,
+            hidden_dim=class_hidden_dim,
+            output_dim=class_classes,
+            num_layers=1,
+        )
 
+    def forward(self, x):
+        x, _ = self.sequence_encoder(x.permute(1, 0, 2))
+        features = self.pool(x.permute(1, 2, 0)).squeeze(-1)
+        pos = self.position_projection(features)
+        return pos, features
 
 
 class DualPiecesNet(nn.Module):
-    def __init__(self,  in_channel=3, kernel_size=3, in_embd=64, d_model=32, in_head=8, num_block=1, dropout=0, d_ff=128, out_num=12):
-        # def __init__(self, in_channel=3, kernel_size=3, in_embd=128, d_model=512, in_head=8, num_block=1, dropout=0.3, d_ff=128, out_c=1):
-        ##################  改动！！！
+    def __init__(
+        self,
+        pretrained=False,
+        in_channel=3,
+        kernel_size=3,
+        in_embd=64,
+        d_model=32,
+        in_head=8,
+        num_block=1,
+        dropout=0,
+        d_ff=128,
+        out_num=12,
+        stem_channels=64,
+        backbone_layers=(1, 1, 1, 1),
+        backbone_stage_planes=(64, 128, 64, 8),
+        backbone_base_width=128,
+        backbone_scale=2,
+        backbone_lstm_input_sizes=(897, 448, 224),
+        backbone_lstm_hidden_sizes=(448, 224, 112),
+        head_lstm_input_size=112,
+        head_lstm_hidden_size=64,
+        head_hidden_dim=64,
+        cls_out_num=4,
+        cls_input_dim=113,
+    ):
+        super().__init__()
 
-        '''
-        :param in_embd: embedding
-        :param d_model: embedding of transformer encoder
-        :param in_head: mutil-heat attention
-        :param dropout:
-        :param d_ff: feedforward of transformer
-        :param out_c: class_num
-        '''
-        super(DualPiecesNet, self).__init__()
-        
-        # self.sos = nn.Embedding(3, 1792)
-        # self.flag = torch.LongTensor([0, 1, 2]).to(0)
+        if not isinstance(pretrained, bool):
+            in_channel = pretrained
+            pretrained = False
 
-        # self.backbone = nn.Sequential(
-        #     DepthwiseSeparableConv1d(in_channels=in_channel, out_channels=32, kernel_size=kernel_size, stride=1, activate=True, bias=False),
-        #     DepthwiseSeparableConv1d(in_channels=32, out_channels=64, kernel_size=kernel_size, stride=2, activate=True, bias=False),
-        #     DepthwiseSeparableConv1d(in_channels=64, out_channels=in_embd, kernel_size=kernel_size, stride=2, activate=True, bias=False),
-        # )
-        
-        
+        self.pretrained = pretrained
+        self.kernel_size = kernel_size
+        self.in_embd = in_embd
+        self.d_model = d_model
+        self.in_head = in_head
+        self.num_block = num_block
+        self.d_ff = d_ff
 
-        self.backbone = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 128, scale = 2)  # [3,4,23,3]
-        # basewidth= 448   1792/448=4
-        
-        
+        backbone_layers = _as_tuple(backbone_layers, 4, "backbone_layers")
+        backbone_stage_planes = _as_tuple(backbone_stage_planes, 4, "backbone_stage_planes")
+        backbone_lstm_input_sizes = _as_tuple(backbone_lstm_input_sizes, 3, "backbone_lstm_input_sizes")
+        backbone_lstm_hidden_sizes = _as_tuple(backbone_lstm_hidden_sizes, 3, "backbone_lstm_hidden_sizes")
 
-        self.backbone1 = nn.Sequential(
-            nn.Conv1d(3, 32, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(32),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(32, 64, kernel_size=kernel_size, stride=4, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            
-            # DeformConv2d(32, 64, 3 , padding=1, modulation=True)
-
-            nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(64, 64, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(64, 32, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm1d(32),
-            nn.ReLU(inplace=True),
+        self.backbone = Res2Net(
+            Bottle2neck,
+            backbone_layers,
+            input_channels=in_channel,
+            stem_channels=stem_channels,
+            stage_planes=backbone_stage_planes,
+            baseWidth=backbone_base_width,
+            scale=backbone_scale,
+            lstm_input_sizes=backbone_lstm_input_sizes,
+            lstm_hidden_sizes=backbone_lstm_hidden_sizes,
+            dropout=dropout,
         )
 
-        # self.enc_embedding_en = DataEmbedding(in_embd, d_model, dropout=dropout)
-        # DataEmbedding数据嵌入模块，对输入的数据进行嵌入处理
-        
+        self.head = DualPiecesHead(
+            sequence_input_size=head_lstm_input_size,
+            sequence_hidden_size=head_lstm_hidden_size,
+            position_hidden_dim=head_hidden_dim,
+            position_classes=out_num,
+            class_input_dim=cls_input_dim,
+            class_hidden_dim=head_hidden_dim,
+            class_classes=cls_out_num,
+            dropout=dropout,
+        )
 
-        layers = []
-        # for _ in range(num_block):
-        #     layers.append(
-        #         Encoder_exformer(
-        #             layer=Attention(dim=d_model, num_heads=in_head, attn_drop=dropout, proj_drop=0.2),
-        #             norm_layer=torch.nn.LayerNorm(d_model),
-        #             d_model=d_model,
-        #             dropout=dropout,
-        #             d_ff=d_ff
-        #         )
-        #     )
-        self.transformer_encoder = nn.Sequential(*layers)
+        # Compatibility aliases for existing checkpoints or external references.
+        self.BiLSTM1 = self.head.sequence_encoder
+        self.ap = self.head.pool
+        self.projetion_pos_1 = self.head.position_projection
+        self.projetion_cls = self.head.class_projection
 
-        self.BiLSTM1 = nn.LSTM(input_size=112,
-                               hidden_size=64,
-                               num_layers=1,
-                               batch_first=True,
-                               bidirectional=True,
-                               dropout=0)
-
-        self.ap = nn.AdaptiveAvgPool1d(output_size=1)
-
-        self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1)
-        # self.projetion_pos_2 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1)
-        self.projetion_cls = MLP(input_dim=113, hidden_dim=64, output_dim=4, num_layers=1)
-
-        # self.fc1 = nn.Linear(128 , 12)
-        # self.fc2 = nn.Linear(128 , 4)
-        
-
-
-    def forward(self, x ):
-        # print(x.shape)
-        # x = self.backbone1(x)
-        # print(x.shape)
-    
-
-        x = self.backbone(x)  #[32, 128, 113]
-        # print(x.shape)
-        
-        # x = x.permute(0, 2, 1)
-        # print(x.shape)
-        x, _ = self.BiLSTM1(x.permute(1, 0, 2))
-
-###################################################################################
-        
-#         x = self.enc_embedding_en(x, None)
-
-#         # print(x.shape)
-       
-#         x = self.transformer_encoder(x)
-#         # print(x.shape)
-  
-#                
-#         # print(x.shape)   
-        x_1 = self.ap(x.permute(1, 2, 0)).squeeze(-1)  #注意：它和nn.Linear一样，如果你输入了一个三维的数据，他只会对最后一维的数据进行处理
-
-#         # print(x_1.shape)
-# ###############################################################################
-
-        # if domain == 'source_train' or 'source_val':
-        #     self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=6, num_layers=1).to(x_1.device)
-        #     pos = self.projetion_pos_1(x_1)  #孔径位置信息
-        # elif domain == 'target_val':
-        #     self.projetion_pos_1 = MLP(input_dim=128, hidden_dim=64, output_dim=12, num_layers=1).to(x_1.device)
-        #     pos = self.projetion_pos_1(x_1)  #孔径位置信息
-        
-        
-        pos = self.projetion_pos_1(x_1)  #孔径位置信息
- 
-
-###############################################################################
-
-
-        # print(pos.shape)
-        # print(cls.shape)
-
- 
-
-        # x = self.ap(x.permute(0, 2, 1)).squeeze(-1)
-
-        # out_x = self.projetion_huigui(x_1)
-        # out_fenlei = self.projetion_leibie(x_1)
-
-
-
-        # return out_huigui, out_fenlei, x.permute(1, 2, 0)[:, :, ::16]
-        return pos,x_1
-
-
+    def forward(self, x):
+        x = self.backbone(x)
+        return self.head(x)
 
 
 if __name__ == '__main__':
-
-    parameter1 = 32
-    x = torch.randn(parameter1, 2, 1792).to(0)
-
-    model = Res2Net(Bottle2neck, [1, 1, 1, 1], baseWidth = 26, scale = 2).to(0)  # [3,4,23,3]
-
-    # model = model(in_channel=3, kernel_size=3, in_embd=64, d_model=112, in_head=2, num_block=1, d_ff=64, dropout=0.2, out_c=4).to(0)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = DualPiecesNet(pretrained=False, in_channel=3).to(device)
+    x = torch.randn(32, 3, 1792).to(device)
+    pos, features = model(x)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('Model total parameter: %.2fkb\n' % (model_params/1024))
-    # print(model)
-
-    # x = model(x)
-    # print(x[0].shape)
-    # print(x[1].shape)
-
-
-
-    # summary(model,input_size=(64,64))
-   
-
-    # print(model)
-    
-    # summary(model, input_size=(2, 1792))
-    # summary(model, input_size=(x))
+    print('Model total parameter: %.2fkb\n' % (model_params / 1024))
+    print(pos.shape, features.shape)

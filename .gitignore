@@ -4,6 +4,7 @@ pth/
 checkpoint_adabn_aliyun/
 checkpoint_adabn/
 tools/
+Logs/
 
 # Python cache files
 __pycache__/
